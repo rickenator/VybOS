@@ -38,17 +38,20 @@ next to realised outputs. Currently VybOS is forced into a flat `store/`.
 3. Prevent the POSIX-name collision pitfall: name it `__vyb_mkdir` (prefixed),
    not a bare `mkdir`, so it never collides with libc `mkdir` when the runtime
    is co-linked into a standalone executable.
-4. stdlib wrapper in a module VybOS already imports (io or a new `fs` module):
-   `mkdir(path<String>)<Bool>` returning true only if the full path exists
-   after the call.
+4. stdlib wrapper in a module VybOS already imports (io or a new `fs` module),
+   using the io module's established `T?` shape (not a bare `Bool`):
+   `mkdir(path<String>)<File?>` — returns a `File` handle to the created
+   directory on success, empty optional `File?()` on failure. Mirrors
+   `open_write`/`open_read` returning `File?` (`stdlib/io/mod.vyb:93`), so
+   callers `match` on it exactly like other io calls.
 5. Negative test: path with a file as an intermediate component returns the
-   failure value, does not panic.
+   empty optional, does not panic.
 
 ### Acceptance
-`build/vyb` JIT-runs a program that `mkdir("/tmp/vybos/a/b/c") == true`,
-`mkdir("/tmp/vybos/a/b/c") == true` again (idempotent), and a sibling test
-under `test/modules/` passes via `test/run_tests.py` with the existing suite
-unchanged.
+`build/vyb` JIT-runs a program that, via `match (mkdir("/tmp/vybos/a/b/c"))`,
+gets a present `File`, then `mkdir` on the same path again is still a present
+`File` (idempotent), and a sibling test under `test/modules/` passes via
+`test/run_tests.py` with the existing suite unchanged.
 
 ---
 
