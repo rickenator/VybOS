@@ -1,0 +1,45 @@
+// build-store.vyb — VybOS M1: realise derivations into the store.
+//
+// For each declared source this walks one real fetch → hashes the ACTUAL
+// returned bytes → materializes a file into the store dir → prints the
+// content-addressed store path. Run twice: identical store paths on a second
+// run is the NixOS-style reproducibility property in action.
+//
+// Sources are plain HTTP/1.1 (httpbin.org serves IPv4 + deterministic bodies —
+// /html and /robots.txt are fixed, so hashes are reproducible).
+// HTTPS/TLS and real tarball URLs are the next slice (doc/STORE-LAYOUT.md).
+
+import collections
+import http
+import io
+import vybos::{Package, fetch_derivation}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    println("=== VybOS M1: real fetch -> real content address -> store ===")
+
+    realised<Int> = 0
+    failed<Int> = 0
+
+    match (fetch_derivation("httpbin-html", "1.0", "httpbin.org", 80, "/html",
+                            "http://httpbin.org/html", storeDir)) {
+        p -> {
+            println("  REALISED " + p.name + "-" + p.version + "  ->  " + p.storePath)
+            realised = realised + 1
+        }
+        ? -> { println("  FAILED  httpbin-html (offline / non-200)"); failed = failed + 1 }
+    }
+
+    match (fetch_derivation("httpbin-robots", "1.0", "httpbin.org", 80, "/robots.txt",
+                            "http://httpbin.org/robots.txt", storeDir)) {
+        p -> {
+            println("  REALISED " + p.name + "-" + p.version + "  ->  " + p.storePath)
+            realised = realised + 1
+        }
+        ? -> { println("  FAILED  httpbin-robots (offline / non-200)"); failed = failed + 1 }
+    }
+
+    println("realised=" + realised.to_string() + " failed=" + failed.to_string())
+    println("store dir: " + storeDir + "/")
+    return 0
+}

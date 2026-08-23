@@ -10,9 +10,9 @@ idea below is a NixOS mechanism we intend to carry over into Vyb-shaped code.
 
 | NixOS / Nix | VybOS analog (vybey) | Status |
 | --- | --- | --- |
-| `/nix/store` — immutable, content-addressed store keyed by hash of inputs | `/vyb/store/<hash>-<name>-<version>` | M0: hash is a stable FNV-1a stand-in; *real* digest pending stdlib crypto |
-| Derivation (`.drv`) — a value: build X from inputs+recipe | `Package` struct (name, version, source, storePath) | M0: value only, no fetching |
-| Realisation — fetch sources, run build recipes, populate store | derivation-graph walker, JIT-run each recipe | not built (M1+) |
+| `/nix/store` — immutable, content-addressed store keyed by hash of inputs | `/vyb/store/<hash>-<name>-<version>` | M1: hash of **real fetched bytes** + identity (FNV stand-in; real digest pending) |
+| Derivation (`.drv`) — a value: build X from inputs+recipe | `Package` struct (name, version, source, storePath) | M0: value only; M1: fetched source |
+| Realisation — fetch sources, run build recipes, populate store | derivation walker, JIT-run each fetch+hash+materialize | M1: single fetch→hash→store file; graph (M2) |
 | Generations & profiles — atomic profile symlink; `current → n-1 → n-2` | `<vyb-store>/profiles/<gen>` symlink chain via atomic rename | not built |
 | Rollback — flip the profile symlink | same | not built |
 | `/run/current-system` — pointer to the active generation | `/run/current-system` (already used as service path in M0) | not built |
@@ -41,9 +41,10 @@ idea below is a NixOS mechanism we intend to carry over into Vyb-shaped code.
 - No Nix store daemon; the store is populated by JIT-run Vyb build code.
 - No separate config language — vybey is the one language for config, modules,
   and build logic.
-- FNV-1a stand-in for content hashing until a real digest exists; a proper
-  content-address must eventually hash *build inputs* (source + settings +
-  dep closure), not just the declared name/version.
+- Content hashing is a two-accumulator FNV-1a stand-in over the **real fetched
+  bytes** + identity (collision-unsafe; a real digest is an RFE). A full
+  NixOS-grade content address must eventually hash the whole input set —
+  source + settings + dependency closure — not just the source bytes.
 
 ## Open decisions
 

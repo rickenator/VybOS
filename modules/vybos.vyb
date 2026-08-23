@@ -15,6 +15,8 @@
 //                      source string on each derivation.
 
 import collections
+import http
+import io
 
 // A derivation: everything needed to obtain/build one thing.
 share(all)
@@ -41,11 +43,12 @@ struct SystemSpec {
     services<Vec<Service>>
 }
 
-// Stable, deterministic content hash over a package's identity string
-// (FNV-1a accumulate + xor; a stand-in for a real digest). Determinism is all
-// M0 needs — same inputs, same store path, every evaluation.
+// Stable, deterministic content hash over a package's declared identity string
+// (FNV-1a accumulate + xor; a stand-in for a real digest). M0 used this for
+// store paths; M1 moved to `content_hash(bytes, name, version)` which hashes
+// the REAL fetched source bytes so the store path tracks actual inputs.
 share(all)
-content_hash(tag<String>)<Int> -> {
+name_hash(tag<String>)<Int> -> {
     h<Int> = 2166136261
     n<Int> = tag.len()
     for (i in 0..n) {
@@ -62,7 +65,7 @@ content_hash(tag<String>)<Int> -> {
 //   /vyb/store/<hash>-<name>-<version>
 share(all)
 store_path(name<String>, version<String>)<String> -> {
-    h<Int> = content_hash(name + "-" + version)
+    h<Int> = name_hash(name + "-" + version)
     return "/vyb/store/" + h.to_string() + "-" + name + "-" + version
 }
 
@@ -88,5 +91,78 @@ new_spec(system<String>)<SystemSpec> -> {
         system = system,
         packages = Vec(),
         services = Vec()
+    }
+}
+
+// === M1: realisation — real fetch → real content-address → store ===
+//
+// NixOS's key property is that a store path is a pure function of the *build
+// inputs*. M0 faked it (hash of declared name/version); M1 hashes the REAL
+// fetched source bytes plus identity, so a content change yields a new path.
+
+// Content-address by actual source bytes + identity. Still a stand-in FNV-1a
+// (no crypto hash in the stdlib yet — an RFE for the Vyb implementation
+// agent), but now over the REAL inputs, which is what makes it a content
+// address and buys dedup/caching.
+share(all)
+content_hash(bytes<String>, name<String>, version<String>)<Int> -> {
+    tag<String> = name + ":" + version + ":" + bytes
+    h1<Int> = 2166136261
+    h2<Int> = 2246822519
+    n<Int> = tag.len()
+    for (i in 0..n) {
+        c<Int> = tag.char_at(i)   // char_at is i8; widen before arithmetic
+        h1 = (h1 * 16777619) ^ c
+        h2 = (h2 * 2246822507) ^ c
+    }
+    h<Int> = h1 + h2 * 31
+    if (h < 0) { h = -h }         // store paths stay non-negative
+    return h
+}
+
+// Write bytes into the store. FLAT single-file layout for M1: the runtime has
+// no mkdir *yet*, so storeDir must already exist and each derivation is one
+// file `<hash>-<name>-<version>.src`. Returns success.
+share(all)
+materialize(bytes<String>, destPath<String>)<Bool> -> {
+    match (open_write(destPath)) {
+        w -> {
+            n<Int> = write_str(w, bytes) else -1
+            close(w)
+            return n >= 0
+        }
+        ? -> { return false }
+    }
+}
+
+// Fetch a real source over plain HTTP (full client), hash its actual bytes,
+// materialize into the store dir, and return the filled Package whose
+// storePath is the REAL content address. Absent on any failure → the build
+// loop reports it rather than crashing.
+//
+// NOTE: plain HTTP/1.1 for now. HTTPS (TLS) + real tarball URLs with multi-
+// segment paths are the next slice (see doc/STORE-LAYOUT.md).
+share(all)
+fetch_derivation(name<String>, version<String>, host<String>, port<Int>,
+                 req_path<String>, source_url<String>, storeDir<String>)<Package?> -> {
+    match (http_get_full(host, port, req_path)) {
+        resp -> {
+            if (resp.status != 200) {
+                return Package?()
+            }
+            bytes<String> = resp.body
+            h<Int> = content_hash(bytes, name, version)
+            sp<String> = "/vyb/store/" + h.to_string() + "-" + name + "-" + version
+            if (!materialize(bytes, storeDir + "/" + h.to_string() + "-" + name + "-" + version + ".src")) {
+                return Package?()
+            }
+            return Package?(Package {
+                name = name,
+                version = version,
+                source = source_url,
+                storePath = sp
+            })
+        }
+        ? -> { return Package?() }
     }
 }

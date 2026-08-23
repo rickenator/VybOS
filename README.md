@@ -19,15 +19,17 @@ runtime. Configuration, packaging, and build logic are all vybish.
 
 ## Status
 
-**M0 complete (2026-08-23).** The config-as-program plumbing is proven: a
-machine declaration (`config/system.vyb`) imports a framework module
-(`modules/vybos.vyb`), JIT-evaluates to a `SystemSpec`, and prints a
-content-addressed store path for each package. Verified reproducible across
-runs. Distro build machinery (real fetch→store→boot) is not built yet.
+**M0 + M1 done (2026-08-23).** Config-as-program plumbing proven: a machine
+declaration (`config/system.vyb`) imports the framework (`modules/vybos.vyb`)
+and JIT-evaluates to a `SystemSpec`. **M1** adds real realisation:
+`build/build-store.vyb` does a real HTTP fetch, hashes the **actual** source
+bytes (content-address), materializes them into `store/`, and prints stable
+store paths — verified **reproducible across runs**. A real boot/system image
+is not built yet.
 
-Also see `doc/NIXOS-BORROWINGS.md` (the build ideas we take from NixOS — "weird
-fork / chopsticks") and `doc/VYB-LANGUAGE-NOTES.md` (verified Vyb gotchas for
-authors).
+Also see `doc/NIXOS-BORROWINGS.md` (the "weird fork / chopsticks" build-idea
+map), `doc/VYB-LANGUAGE-NOTES.md` (verified Vyb gotchas), and
+`doc/STORE-LAYOUT.md` (store-layout decision + blockers).
 
 ## Conceptual Shape
 
@@ -59,6 +61,11 @@ authors).
 cd ~/Projects/VybOS
 VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
   /usr/export/rick/Projects/Vyb/build/vyb config/system.vyb --module-path modules
+
+# M1 — realise derivations: real fetch -> content-addressed store (needs network):
+mkdir -p store   # store/ is gitignored (build cache)
+VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
+  /usr/export/rick/Projects/Vyb/build/vyb build/build-store.vyb --module-path modules
 ```
 
 ## Source Of Truth
@@ -71,19 +78,20 @@ VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
 
 ## Next Steps
 
-- [ ] Write a minimal `SystemSpec` type and a `system.vyb` that JIT-evaluates to
-      a concrete (even empty) spec, to prove the config-as-program plumbing.
-- [ ] Decide store layout and a first trivial derivation (e.g. a fetched source
-      → hashed store path).
+- [x] M0: `SystemSpec` + `system.vyb` JIT-evaluating to a concrete spec.
+- [x] M1: store layout decision + first real derivation (fetch → hash → store file).
+- [ ] M2: materialize a real dependency graph; add per-derivation metadata (`.drv`-style) + nested store once the runtime gains `mkdir`.
+- [ ] Real crypto digest (SHA-256) — RFE to the Vyb implementation agent (FNV stand-in is not collision-safe).
+- [ ] HTTPS/TLS fetch + URL→(host,port,path) parsing so `derive()` source URLs realise directly.
+- [ ] Generations/profiles + atomic switch/rollback.
 - [ ] Define the module composition convention (how `modules/*` combine).
-- [ ] Pick a boot target: kernel + initramfs image on QEMU as the first real
-      boot, vs. a container/Distrobox-style rootfs first.
-- [ ] Init GitHub repo + README lives here once the shape firms up.
+- [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.
+- [ ] Init GitHub repo (no remote yet).
 
 ## Notes
 
 - Scoped to "framework written in JIT Vyb" — kernel/userspace can stay
   upstream/Linux; the distinguishing work is the vybey build+config system.
 - Follow Vyb terminology: **vybey** = the language, **vybish** = its style.
-- The store name/location (`/vyb/store` vs elsewhere) is deliberately unresolved;
-  settle it when the derivation work starts to avoid churn.
+- Store layout is settled for M1 in `doc/STORE-LAYOUT.md` (repo-local `store/`,
+  flat, FNV stand-in over real bytes; `/vyb/store` on-target).

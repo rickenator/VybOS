@@ -2,3 +2,6 @@
 *.vyb.ll
 *.o
 *.a
+
+# Realised store is a build cache (regenerated), not source.
+store/

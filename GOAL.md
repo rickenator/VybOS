@@ -35,10 +35,15 @@ the config language is the language.
 ## Current Milestone
 
 **M0 — Bootstrap + config-as-program proof (done 2026-08-23)**: repo
-scaffolded; vision written down; a minimal `SystemSpec` (modules/vybos.vyb)
-JIT-evaluated by config/system.vyb to deterministic, content-addressed store
-paths. Verified reproducible across runs.
+scaffolded; a minimal `SystemSpec` (modules/vybos.vyb) JIT-evaluated by
+config/system.vyb to a concrete spec.
 
-**M1 (next)**: real fetching → materialize one derivation into `/vyb/store`
-(hash the actual build inputs, not just the declared name/version), and decide
-store layout. See `doc/NIXOS-BORROWINGS.md`.
+**M1 — First real derivation (done 2026-08-23)**: real HTTP fetch → hash the
+ACTUAL source bytes (content address) → materialize into `store/` →
+reproducible store paths. Store layout settled in `doc/STORE-LAYOUT.md`.
+Realised via `build/build-store.vyb` using the `http_get_full` client.
+
+**M2 (next)**: real dependency graph → materialize a transitive closure, add
+per-derivation metadata (`.drv`-style) + nested store (needs `mkdir` in the
+runtime), then HTTPS/tarball fetch and generations/rollback. Blockers listed in
+`doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.
