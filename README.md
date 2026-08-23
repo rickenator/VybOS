@@ -81,8 +81,8 @@ VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
 - [x] M0: `SystemSpec` + `system.vyb` JIT-evaluating to a concrete spec.
 - [x] M1: store layout decision + first real derivation (fetch → hash → store file).
 - [ ] M2: materialize a real dependency graph; add per-derivation metadata (`.drv`-style) + nested store once the runtime gains `mkdir`.
-- [ ] Real crypto digest (SHA-256) — RFE to the Vyb implementation agent (FNV stand-in is not collision-safe).
-- [ ] HTTPS/TLS fetch + URL→(host,port,path) parsing so `derive()` source URLs realise directly.
+- [x] Real crypto digest / HTTPS-fetch gaps scoped — drafted `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) for the Vyb implementation agent; HTTPS itself already landed in stdlib.
+- [ ] URL→(host,port,path) parsing in stdlib (Item 4 of `doc/RFE-M2.md`); HTTPS fetch itself already works.
 - [ ] Generations/profiles + atomic switch/rollback.
 - [ ] Define the module composition convention (how `modules/*` combine).
 - [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.
