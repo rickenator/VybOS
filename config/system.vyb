@@ -1,0 +1,39 @@
+// system.vyb — a concrete machine declaration for VybOS (M0).
+//
+// Evaluating this program under the Vyb JIT must yield a full SystemSpec.
+// This is the config-as-program proof: no interpreter, just vybey + JIT.
+// Anything here can be changed and re-evaluated; the store paths and spec
+// are pure functions of the declared inputs.
+
+import collections
+import vybos::{SystemSpec, Package, Service, derive, service, new_spec}
+
+main()<Int> -> {
+    spec<SystemSpec> = new_spec("x86_64-linux")
+
+    spec.packages.push(derive("bash",    "5.2.26", "https://ftp.gnu.org/gnu/bash/bash-5.2.26.tar.gz"))
+    spec.packages.push(derive("coreutils","9.4",   "https://ftp.gnu.org/gnu/coreutils/coreutils-9.4.tar.xz"))
+    spec.packages.push(derive("vim",     "9.1",   "https://github.com/vim/vim/archive/v9.1.tar.gz"))
+
+    spec.services.push(service("sshd",  "/run/current-system/sw/sbin/sshd"))
+    spec.services.push(service("getty", "/run/current-system/sw/bin/agetty --noclear tty1"))
+
+    println("=== VybOS SystemSpec (JIT-evaluated) ===")
+    println("system: " + spec.system)
+
+    // Note: `for (x in structField)` does not resolve the Vec iterator bind in
+    // Vyb yet, so bind the member Vecs to locals first (verified workaround).
+    our_pkgs<Vec<Package>> = spec.packages
+    our_svcs<Vec<Service>> = spec.services
+
+    println("packages (" + our_pkgs.len().to_string() + "):")
+    for (p in our_pkgs) {
+        println("  " + p.name + " " + p.version + "  ->  " + p.storePath)
+    }
+
+    println("services (" + our_svcs.len().to_string() + "):")
+    for (s in our_svcs) {
+        println("  [" + s.enabled.to_string() + "] " + s.name + " :: " + s.command)
+    }
+    return 0
+}

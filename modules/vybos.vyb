@@ -1,0 +1,92 @@
+// vybos.vyb — VybOS framework core (M0).
+//
+// What a system IS, expressed as a Vyb program instead of a Nix file.
+//
+// NixOS build ideas borrowed here (we are a weird fork — "chopsticks"):
+//   - derivations:     a value that fully describes how to build a thing from
+//                      its inputs (Package = name + version + source identity).
+//   - content-addressed store: an immutable store path derived from the
+//                      package's identity. Nix hashes build *inputs*; M0 uses a
+//                      stable FNV-1a stand-in on the package identity until a
+//                      crypto digest lands in the stdlib.
+//   - generations:     kept OUT of M0 on purpose, but the atomic-switchable
+//                      profile is the shape this store is designed around.
+//   - flake inputs:    later. A pinned, fixed source fetch; M0 just records the
+//                      source string on each derivation.
+
+import collections
+
+// A derivation: everything needed to obtain/build one thing.
+share(all)
+struct Package {
+    name<String>,
+    version<String>,
+    source<String>,       // where the inputs come from (url / git / local)
+    storePath<String>     // content-addressed location in the immutable store
+}
+
+// A declarative service entry; enabled::Bool controls whether it activates.
+share(all)
+struct Service {
+    name<String>,
+    command<String>,
+    enabled<Bool>
+}
+
+// The whole machine declaration, JIT-evaluated in one pass.
+share(all)
+struct SystemSpec {
+    system<String>,            // target triple, e.g. "x86_64-linux"
+    packages<Vec<Package>>,
+    services<Vec<Service>>
+}
+
+// Stable, deterministic content hash over a package's identity string
+// (FNV-1a accumulate + xor; a stand-in for a real digest). Determinism is all
+// M0 needs — same inputs, same store path, every evaluation.
+share(all)
+content_hash(tag<String>)<Int> -> {
+    h<Int> = 2166136261
+    n<Int> = tag.len()
+    for (i in 0..n) {
+        c<Int> = tag.char_at(i)   // char_at yields an i8; widen to Int first
+        h = (h * 16777619) ^ c
+    }
+    if (h < 0) {            // i64 wrap can go negative; store paths stay >= 0
+        h = -h
+    }
+    return h
+}
+
+// Build a content-addressed store path:
+//   /vyb/store/<hash>-<name>-<version>
+share(all)
+store_path(name<String>, version<String>)<String> -> {
+    h<Int> = content_hash(name + "-" + version)
+    return "/vyb/store/" + h.to_string() + "-" + name + "-" + version
+}
+
+// Composition helpers (the NixOS "build/compose" feel, in vybey).
+share(all)
+derive(name<String>, version<String>, source<String>)<Package> -> {
+    return Package {
+        name = name,
+        version = version,
+        source = source,
+        storePath = store_path(name, version)
+    }
+}
+
+share(all)
+service(name<String>, command<String>)<Service> -> {
+    return Service { name = name, command = command, enabled = true }
+}
+
+share(all)
+new_spec(system<String>)<SystemSpec> -> {
+    return SystemSpec {
+        system = system,
+        packages = Vec(),
+        services = Vec()
+    }
+}
