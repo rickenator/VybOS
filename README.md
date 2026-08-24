@@ -27,6 +27,16 @@ bytes (content-address), materializes them into `store/`, and prints stable
 store paths — verified **reproducible across runs**. A real boot/system image
 is not built yet.
 
+**M2 step landed (2026-08-24):** a real dependency-**closure** realizer.
+`build/build-closure.vyb` walks a typed dependency graph in topological order,
+fetches each source, and writes every derivation as a source blob plus a
+per-derivation `.meta.json` (the `.drv` analogue: name/version/source, real
+content hash of the fetched bytes, closure-aware store identity, and the
+closure of direct inputs with store paths). The graph resolvers/planners were
+promoted into `modules/plan.vyb` so every entry program shares one audited
+implementation. Verified on `build/vyb`: reproducible across runs, and a
+transitive dep bump changes exactly the affected closure's store paths.
+
 Also see `doc/NIXOS-BORROWINGS.md` (the "weird fork / chopsticks" build-idea
 map), `doc/VYB-LANGUAGE-NOTES.md` (verified Vyb gotchas), and
 `doc/STORE-LAYOUT.md` (store-layout decision + blockers).
@@ -53,19 +63,26 @@ map), `doc/VYB-LANGUAGE-NOTES.md` (verified Vyb gotchas), and
 
 ## How To Run
 
+Paths below are godzilla-relative (`~/Projects`). On apex the compiler repo
+lives at `/usr/export/rick/Projects/Vyb` instead.
+
 ```sh
 # Prerequisite: Vyb compiler JIT binary
-#   /usr/export/rick/Projects/Vyb  →  cmake --build build  →  build/vyb
+#   ~/Projects/Vyb  →  cmake --build build  →  build/vyb
 
 # M0 — JIT-evaluate the machine declaration through the framework:
 cd ~/Projects/VybOS
-VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
-  /usr/export/rick/Projects/Vyb/build/vyb config/system.vyb --module-path modules
+VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
+  /home/rick/Projects/Vyb/build/vyb config/system.vyb --module-path modules
 
 # M1 — realise derivations: real fetch -> content-addressed store (needs network):
 mkdir -p store   # store/ is gitignored (build cache)
-VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
-  /usr/export/rick/Projects/Vyb/build/vyb build/build-store.vyb --module-path modules
+VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
+  /home/rick/Projects/Vyb/build/vyb build/build-store.vyb --module-path modules
+
+# M2 step — realise a real dependency CLOSURE with .drv-style .meta.json:
+VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
+  /home/rick/Projects/Vyb/build/vyb build/build-closure.vyb --module-path modules
 ```
 
 ## Source Of Truth
@@ -80,7 +97,7 @@ VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
 
 - [x] M0: `SystemSpec` + `system.vyb` JIT-evaluating to a concrete spec.
 - [x] M1: store layout decision + first real derivation (fetch → hash → store file).
-- [ ] M2: materialize a real dependency graph; add per-derivation metadata (`.drv`-style) + nested store once the runtime gains `mkdir`.
+- [~] M2 store slice (partial): real dependency-graph materialization + per-derivation `.drv`-style `.meta.json` are done in the flat store (`build/build-closure.vyb`); **nested** store still waits on the runtime gaining `mkdir` (RFE-M2 #1).
 - [x] Real crypto digest / HTTPS-fetch gaps scoped — drafted `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) for the Vyb implementation agent; HTTPS itself already landed in stdlib.
 - [ ] URL→(host,port,path) parsing in stdlib (Item 4 of `doc/RFE-M2.md`); HTTPS fetch itself already works.
 - [ ] Generations/profiles + atomic switch/rollback.

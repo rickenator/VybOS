@@ -382,3 +382,22 @@ its system by **content digest** rather than embedding the `SystemSpec` value
 (it keeps generation records small and matches the store model); dependency
 kind is a validated `String` + `select` set-patterns because **enums are not
 yet struct-field types**.
+
+### §0.1 Status addendum (2026-08-24, godzilla)
+
+- The graph framework (`resolve` / `resolve_issue` / `real_of` / `real_table` /
+  `spec_digest` / `plan_lines` / `tokidx`) was **promoted from the prototype
+  entry into `modules/plan.vyb`** so every build/config program shares one
+  audited, `share(all)` implementation (proto-plan still passes 27/27 using
+  the module copies — no behavior change).
+- **`build/build-closure.vyb`** is a real dependency-closure realizer and a
+  Phase-1 step: config → `resolve()` topological order → `real_table()`
+  closure-aware identities → fetch in dep-first order → write each source blob
+  plus a per-derivation **`<real>-<name>-<ver>.meta.json`** (the `.drv`
+  analogue). Verified on `build/vyb`:
+  - reproducible across runs (identical closure paths), and
+  - a transitive dep bump (zlib 1.3→1.4) changes exactly the affected closure's
+    identities (`gzip`/`openssl` paths change while their own `contentHash`
+    stays fixed).
+  The realizer is still **flat** store (no `mkdir` needed yet); **nested**
+  layout awaits RFE-M2 #1. HTTPS/tar/URL parsing remain RFE-M2 #3/#4.

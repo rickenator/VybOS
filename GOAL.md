@@ -43,7 +43,10 @@ ACTUAL source bytes (content address) → materialize into `store/` →
 reproducible store paths. Store layout settled in `doc/STORE-LAYOUT.md`.
 Realised via `build/build-store.vyb` using the `http_get_full` client.
 
-**M2 (next)**: real dependency graph → materialize a transitive closure, add
-per-derivation metadata (`.drv`-style) + nested store (needs `mkdir` in the
-runtime), then HTTPS/tarball fetch and generations/rollback. Blockers listed in
-`doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.
+**M2 (in progress)**: real dependency graph → materialize a transitive closure,
+add per-derivation metadata (`.drv`-style) — **closure realization + flat-store
+`.meta.json` landed 2026-08-24** (`build/build-closure.vyb`; graph framework
+promoted into `modules/plan.vyb`; transitive-bump + reproducibility verified).
+Remaining M2: nested store (needs `mkdir` in the runtime), HTTPS/tarball fetch,
+generations/rollback. Blockers listed in `doc/STORE-LAYOUT.md` →
+`doc/NIXOS-BORROWINGS.md`.
