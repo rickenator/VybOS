@@ -1,0 +1,148 @@
+// plan.vyb — VybOS panel types + trivial leaf helpers.
+//
+// SCOPE: this module holds the shared *types* plus small, pure, spliceable
+// helpers (find_pkg, token scanners, dep_key, realize_hash). The graph
+// algorithms (resolve / real_table / plan_lines) live in the entry program
+// build/proto-plan.vyb as ordinary top-level functions — keep the module
+// to types + leaf logic so it stays importable and trivial to audit.
+// NOTE: Vyb ranges are INCLUSIVE of the upper bound; iterate vectors with
+// 0..len-1 and guard empties, or you read one-past-the-buffer (double-free).
+import collections
+
+share(all)
+struct Dep { name<String>, kind<String> }
+share(all)
+struct Pkg { name<String>, version<String>, source<String>, deps<Vec<Dep>>, storePath<String> }
+share(all)
+struct Service { name<String>, command<String>, enabled<Bool> }
+share(all)
+struct SystemSpec { system<String>, hostname<String>, pkgs<Vec<Pkg>>, services<Vec<Service>> }
+share(all)
+struct RealRec { name<String>, real<Int> }
+share(all)
+struct Generation { id<Int>, parent<Int?>, hash<Int> }
+
+// index of first pkg named `name`, or -1.
+share(all)
+find_pkg(pkgs<Vec<Pkg>>, name<String>)<Int> -> {
+    n<Int> = pkgs.len()
+    if (n > 0) {
+        for (i in 0..n-1) { if (pkgs.get(i).name == name) { return i } }
+    }
+    return -1
+}
+
+// number of comma-separated tokens (0 for "").
+share(all)
+order_count(ord<String>)<Int> -> {
+    if (ord.len() == 0) { return 0 }
+    c<Int> = 1
+    l<Int> = ord.len()
+    for (i in 0..l-1) { if (ord.char_at(i) == 44) { c = c + 1 } }
+    return c
+}
+
+// k-th comma-separated token (last token if k >= count).
+share(all)
+token_kth(ord<String>, k<Int>)<String> -> {
+    cur<String> = ""
+    tidx<Int> = 0
+    l<Int> = ord.len()
+    if (l > 0) {
+        for (i in 0..l-1) {
+            ci<Int> = ord.char_at(i)
+            if (ci == 44) {
+                if (tidx == k) { return cur }
+                tidx = tidx + 1
+                cur = ""
+            } else {
+                cur = cur + String::from_byte(ci & 255)
+            }
+        }
+    }
+    return cur
+}
+
+// true iff `name` occurs as one of the comma-separated tokens.
+share(all)
+token_has(ord<String>, name<String>)<Bool> -> {
+    c<Int> = order_count(ord)
+    if (c > 0) {
+        for (i in 0..c-1) { if (token_kth(ord, i) == name) { return true } }
+    }
+    return false
+}
+
+// canonical, sorted "name:kind,.." key over a pkg's direct deps.
+share(all)
+dep_key(deps<Vec<Dep>>)<String> -> {
+    names<Vec<String>> = Vec()
+    m<Int> = deps.len()
+    if (m > 0) {
+        for (k in 0..m-1) {
+            dk<Dep> = deps.get(k)
+            names.push(dk.name + ":" + dk.kind)
+        }
+    }
+    snames<Vec<String>> = names.sorted()
+    key<String> = ""
+    q<Int> = snames.len()
+    if (q > 0) {
+        for (k in 0..q-1) { if (k > 0) { key = key + "," }; key = key + snames.get(k) }
+    }
+    return key
+}
+
+// leaf (non-closure) content identity: name + version + source + deps key.
+share(all)
+realize_hash(name<String>, version<String>, source<String>, depsKey<String>)<Int> -> {
+    s<String> = name + ":" + version + ":" + source + ":" + depsKey
+    h<Int> = 2166136261
+    l<Int> = s.len()
+    if (l > 0) {
+        for (i in 0..l-1) {
+            ci<Int> = s.char_at(i)
+            h = (h * 16777619) ^ (ci & 255)
+        }
+    }
+    if (h < 0) { h = -h }
+    return h
+}
+
+share(all)
+leaf_key(pkg<Pkg>)<String> -> {
+    return pkg.name + ":" + pkg.version + ":" + pkg.source + ":" + dep_key(pkg.deps)
+}
+
+// true iff k is a recognised dependency kind (select set-patterns, exhaustive).
+share(all)
+is_valid_kind(k<String>)<Bool> -> {
+    return select(k) -> {
+        {"build"}  -> true,
+        {"runtime"} -> true,
+        {"host"}   -> true,
+        ?          -> false
+    }
+}
+
+// true iff every dep kind in the spec is recognised.
+share(all)
+kinds_valid(pkgs<Vec<Pkg>>)<Bool> -> {
+    n<Int> = pkgs.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            deps<Vec<Dep>> = pkgs.get(i).deps
+            m<Int> = deps.len()
+            if (m > 0) {
+                for (k in 0..m-1) {
+                    if (!is_valid_kind(deps.get(k).kind)) { return false }
+                }
+            }
+        }
+    }
+    return true
+}
+
+// rollback selection helper: parent generation id as a plain Int (0 if none).
+share(all)
+parent_id(gen<Generation>)<Int> -> { return gen.parent else 0 }
