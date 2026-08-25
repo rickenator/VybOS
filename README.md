@@ -10,9 +10,10 @@ last_edited: 2026-08-23
 
 ## Goal
 
-A Linux distribution in the spirit of NixOS — declarative, reproducible,
-content-addressed system configuration — but with the **entire framework written
-in JIT Vyb** instead of Nix.
+A Linux distribution with declarative, reproducible, content-addressed system 
+configuration — with the entire control framework written in JIT Vyb. 
+
+PID 1 is Vyb.
 
 The core idea: a system is not described to an interpreter, it is a **Vyb
 program** that the Vyb JIT compiles and runs to produce the machine's
