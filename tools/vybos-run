@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# tools/vybos-run — VybOS container-rootfs launcher (issue #1 launcher shape).
+# tools/vybos-run — VybOS rootfs launcher (issue #1 launcher shape).
 #
-# Boots the staged VybOS rootfs (default build/rootfs-out) in a DISPOSABLE
-# container: a temp overlay copy is seeded with a static BusyBox userspace
-# (host /usr/bin/busybox), the rootfs becomes the container root /, and the
-# config-driven /init runs to a defined VYBOS_READY state. The canonical rootfs
-# is NEVER modified — writes happen only in the disposable overlay (tmp, rm'd
-# on exit unless --keep).
+# Boots the staged VybOS rootfs (default build/rootfs-out) to a defined
+# VYBOS_READY state. A temp overlay copy is seeded with a static BusyBox
+# userspace (host /usr/bin/busybox) so the rootfs is a self-contained /, and
+# the config-driven /init runs to READY. The canonical rootfs is NEVER
+# modified — writes happen only in the disposable overlay (tmp, rm'd on exit
+# unless --keep).
+# Runtimes:
+#   bwrap  (default)  container-rootfs boot in a disposable bubblewrap sandbox (unprivileged)
+#   docker            container-rootfs boot via docker import + run (needs docker daemon + group)
+#   qemu              QEMU kernel+initramfs self-boot (Option A / B4): boots the rootfs as
+#                     an initramfs under a real Linux kernel (Alpine netboot vmlinuz-virt, fetched
+#                     to build/kernel-cache or --kernel), reaches READY on the serial console.
 #
-# Honest scope: this is a CONTAINER-ROOTFS boot (plan B1 + B3-lite: config +
-# minimal userspace + init). It is NOT a QEMU kernel+initramfs boot — that is
-# the later B4 milestone (doc/PLAN_BOOTABLE_IMAGE.md). The userspace is a
-# stand-in static BusyBox seeded at launch time, until VybOS ships its own.
+# Honest scope: bwrap/docker are CONTAINER-ROOTFS boots (B1 + B3-lite). qemu is
+# a real kernel+initramfs boot (B4, Option A) — this is what closes the
+# "bootable image" line. Userspace in all modes is a stand-in static BusyBox,
+# seeded at launch, until VybOS ships its own.
 #
 # Usage:
-#   tools/vybos-run [--rootfs <dir>] [--runtime bwrap|docker] [--keep] [--test]
+#   tools/vybos-run [--rootfs <dir>] [--runtime bwrap|docker|qemu] [--kernel <path>] [--keep] [--test]
 #     --test      boot and assert config paths exist + init reached READY -> exit 0/1
-#     --runtime   bwrap (default, unprivileged) | docker (needs docker daemon + group)
+#     --runtime   bwrap (default, unprivileged) | docker | qemu (kernel+initramfs)
+#     --kernel    explicit kernel bzImage for --runtime qemu (else cached Alpine vmlinuz-virt)
 #     --rootfs    staged rootfs dir (default ../build/rootfs-out)
 #     --keep      keep the disposable overlay on exit (debugging)
 #     --busybox   path to a static busybox to seed (default /usr/bin/busybox)
@@ -29,6 +36,8 @@ ROOTFS="${VYBOS_ROOTFS:-$ROOT/build/rootfs-out}"
 VYB="${VYB:-$HOME/Projects/Vyb-vybos/build/vyb}"
 VYB_STDLIB="${VYB_STDLIB:-$HOME/Projects/Vyb-vybos/stdlib}"
 BUSYBOX="${BUSYBOX:-/usr/bin/busybox}"
+KERNEL="${VYBOS_KERNEL:-}"
+KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/vmlinuz-virt"
 MODE=run
 RUNTIME="${VYBOS_RUNTIME:-bwrap}"
 KEEP=0
@@ -39,6 +48,7 @@ while [ $# -gt 0 ]; do
     --keep) KEEP=1 ;;
     --rootfs) ROOTFS="$2"; shift ;;
     --runtime) RUNTIME="$2"; shift ;;
+    --kernel) KERNEL="$2"; shift ;;
     --busybox) BUSYBOX="$2"; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -87,6 +97,40 @@ case "$RUNTIME" in
     ( cd "$OVL" && tar -c . | docker import - vybos:rootfs >/dev/null 2>&1 )
     OUT=$(docker run --rm --read-only vybos:rootfs /bin/sh /init 2>&1)
     rc=$?
+    ;;
+  qemu)
+    # kernel: explicit --kernel, else cached Alpine netboot vmlinuz-virt.
+    if [ -z "$KERNEL" ]; then
+      KC="$ROOT/build/kernel-cache"; KERNEL="$KC/vmlinuz-virt"
+      if [ ! -s "$KERNEL" ]; then
+        mkdir -p "$KC"
+        echo "fetching kernel -> $KERNEL" >&2
+        curl -sSL -o "$KERNEL" "$KERNEL_URL" || { echo "kernel fetch failed" >&2; exit 1; }
+      fi
+    fi
+    if [ ! -s "$KERNEL" ]; then echo "no usable kernel at $KERNEL" >&2; exit 1; fi
+    # kernel execve of /init needs the exec bit (staged 0644 -> EACCES otherwise).
+    chmod +x "$OVL/init"
+    IR=$(mktemp -d /tmp/vybos-run-qemu.XXXXXX)
+    cp -a "$OVL"/. "$IR"/
+    INITRD=$(mktemp /tmp/vybos-initrd.XXXXXX)
+    ( cd "$IR" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -1 ) > "$INITRD"
+    SERIAL=$(mktemp /tmp/vybos-serial.XXXXXX)
+    qemu-system-x86_64 -m 256M -accel tcg -kernel "$KERNEL" -initrd "$INITRD" \
+        -append "console=ttyS0 rdinit=/init" -nographic -no-reboot > "$SERIAL" 2>&1 &
+    QPID=$!
+    # wait up to ~180s for the READY marker on serial (TCG is slow; no /dev/kvm).
+    i=0; ready=0
+    while [ $i -lt 360 ]; do
+      grep -q 'VYBOS_READY=1' "$SERIAL" 2>/dev/null && { ready=1; break; }
+      kill -0 "$QPID" 2>/dev/null || break
+      sleep 0.5; i=$((i+1))
+    done
+    kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+    rm -rf "$IR" "$INITRD"
+    rc=0; [ "$ready" = 1 ] || rc=1
+    OUT="$(cat "$SERIAL")"
+    rm -f "$SERIAL"
     ;;
   *)
     echo "unknown --runtime: $RUNTIME" >&2; exit 2 ;;

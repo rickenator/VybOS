@@ -25,7 +25,8 @@ bootloader, or disk image.
 | Realized store | ✅ `store/<hash>-<name>-<ver>.src` + `.meta.json` (source blobs & trees, flat; nested store blocked on `mkdir` RFE) |
 | Rootfs materialize (B1) | ✅ `build-rootfs.vyb` → `build/rootfs-out` (`/etc/vyb-os/*` + config-driven `/init`) |
 | Container-rootfs boot (B1+B3-lite) | ✅ `tools/vybos-run --test` boots the rootfs to `VYBOS_READY` (bwrap default, unprivileged; docker alt). Stand-in BusyBox userspace seeded in a disposable overlay; canonical rootfs untouched |
-| Kernel / initramfs / bootloader | ❌ absent (B4 QEMU self-boot is the follow-on) |
+| Kernel + initramfs (B4, Option A) | ✅ demoed: `tools/vybos-run --runtime qemu --test` boots a REAL Linux kernel (Alpine 6.6 netboot `vmlinuz-virt`, cached in `build/kernel-cache/`) with the VybOS rootfs as initramfs, reaches `VYBOS_READY` on the serial console (TCG — this host has no /dev/kvm). `/init` must be `+x` for kernel execve. REMAINING: disk image, bootloader, gen-switch, real Vyb userspace |
+| Bootloader / disk image (B5) | ❌ none yet |
 | Boot target decision | ✅ DECIDED 2026-08-25: Option B (container rootfs first) + container boot landed |
 | Image format / QEMU script | ❌ none yet |
 
@@ -99,10 +100,16 @@ this is the boot-target the rest of this roadmap and issue #1 build toward.
 - The "ready" marker is what `tools/vybos-run --test` waits for (issue #1).
 - Service activation driven by the composed `SystemSpec` (vybey), not hand-rolled.
 
-### B4 — Kernel + initramfs (QEMU self-boot, Option A) [needs impl/RFE]
+### B4 — Kernel + initramfs (QEMU self-boot, Option A) — EARLY DEMO LANDED (2026-08-25)
 - Fetch/assemble a kernel; build an initramfs that mounts the rootfs; add
   boot cmdline (e.g. `console=ttyS0,115200`), serial-wired.
-- This is what turns a rootfs into a `qemu-system-x86_64`-bootable image.
+- ✅ **Demoed**: `tools/vybos-run --runtime qemu --test` boots the VybOS rootfs
+  as an initramfs under a real kernel (Alpine 6.6 `-virt`, fetched into
+  `build/kernel-cache/`) to `VYBOS_READY` on serial (TCG; no /dev/kvm on this
+  host). The kernel execve's `/init` as PID 1, which must be `+x`; the
+  expectable "Attempted to kill init" panic after READY is the natural stop.
+- **Remaining:** a real persistent image (root disk / gen-switch), bootloader,
+  and VybOS's own userspace (not stand-in BusyBox).
 - **Note:** image assembly may trip on large real source archives → **Vyb
   issue #189** (string-registry cap) currently blocks realizing big trees;
   work with small sources or wait for the runtime fix.
