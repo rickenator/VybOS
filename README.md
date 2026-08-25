@@ -2,6 +2,10 @@
 last_edited: 2026-08-23
 ---
 
+<p align="center">
+  <img src="vybos.png" alt="VybOS logo" width="220">
+</p>
+
 # VybOS
 
 ## Goal
@@ -57,6 +61,10 @@ re-verified after rebounding the toolchain to the fixed commit.
 
 Also see `doc/NIXOS-BORROWINGS.md`, `doc/VYB-LANGUAGE-NOTES.md`, and
 `doc/STORE-LAYOUT.md`.
+
+Namespace/release-channel note: `doc/NAMESPACES.md` records the intended future
+split between upstream `rickenator/Vyb`, downstream `VybLang` SDK releases, and
+the VybOS distro/package namespace.
 
 ## Conceptual Shape
 
