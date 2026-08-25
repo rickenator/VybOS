@@ -129,3 +129,12 @@ to serve a module-composed spec, so the realizer can realise genuine HTTPS
 sources (github tarballs per the RFE-M2 testing note) instead of the
 deterministic local mirror — a wiring change, since everything shares the same
 `plan.vyb` / `realize.vyb` types.
+
+**Added:** `modules/urlrealize.vyb` provides `fetch_url()` — parses a package's
+own `source` URL with `url_split` and selects the transport by scheme
+(`http` → `http_get_full`; `https` → `https_get_full_verified` with the system
+CA) — and `realize_spec_url()` realises a whole spec from each package's real
+URL. `build/build-url-realize.vyb` drives it: one package, a real GitHub-raw
+`https://...` source, fetched over verified TLS, content-addressed, written to
+the store. 9 invariants PASS on the isolated toolchain. This is the RFE-M2 note
+realised: genuine HTTPS access to files, actually built into the store.

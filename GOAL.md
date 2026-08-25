@@ -85,6 +85,11 @@ half is `modules/realize.vyb` (shared realizer core promoted out of
 build-closure: closure identity + topological fetch → content-hash → write
 `.src` + `.drv`-style `.meta.json`) driven by `build/build-exec.vyb`, which
 composes a module-built desired spec and realises it; all 11 execute
+invariants PASS. **Real HTTPS URL-driven realization** (`modules/urlrealize.vyb`
++ `build/build-url-realize.vyb`): a package's own `source` URL is parsed by
+`url_split`, the scheme selects the transport (`http_get_full` vs
+`https_get_full_verified` with the system CA), and real GitHub-raw bytes are
+fetched over genuine TLS, content-addressed, and written to the store — 9
 invariants PASS.
 
 **Toolchain isolation (2026-08-24)**: VybOS now builds/runs against an
