@@ -76,7 +76,11 @@ example modules (`sshd`/`getty`/`vim`), a 15-invariant self-test
 assembles the machine by folding module contributions. This is the NixOS
 `options`/`config` idea in vybey: a module is a typed function (params are its
 options), so there is no options schema to interpret — the call site is the
-declaration.
+declaration. The convention is wired into the transition pipeline via
+`build/build-apply.vyb` (compose `cur`/`des` → `compose_issue` gate → `spec_digest`
+→ deterministic `plan_lines` install/keep/remove — the `vyb system apply`
+dry-run), with an added `nginx` example module for a real install/remove
+delta. All 10 apply invariants PASS on the isolated toolchain.
 
 **Toolchain isolation (2026-08-24)**: VybOS now builds/runs against an
 **isolated Vyb worktree** — `~/Projects/Vyb-vybos` (branch `vyb-os-stable`,

@@ -101,6 +101,9 @@ $VYB config/system.vyb --module-path modules
 # Module composition convention (pure Vyb, offline) — 15 invariant self-test:
 $VYB build/build-compose.vyb --module-path modules
 
+# Compose -> validate -> transition plan (the `vyb system apply` dry-run):
+$VYB build/build-apply.vyb --module-path modules
+
 # M1 — realise derivations: real fetch -> content-addressed store (needs network):
 mkdir -p store   # store/ is gitignored (build cache)
 $VYB build/build-store.vyb --module-path modules

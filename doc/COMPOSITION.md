@@ -111,8 +111,13 @@ println(spec.to_string())            // clean nested JSON (the machine contract)
 
 ## Status / next
 
-Implemented and verified on the isolated `Vyb-vybos` toolchain. Next natural
-step: teach the realizer (`build/build-closure.vyb`) to consume a
-module-composed `SystemSpec` directly (it already validates via
-`plan.resolve_issue`); the convention and the graph framework share the same
-`plan.vyb` types by construction, so this is a wiring change, not a new model.
+Implemented and verified on the isolated `Vyb-vybos` toolchain. The convention
+is already wired into the transition pipeline: `build/build-apply.vyb` composes
+a *current* and *desired* machine from modules, gates them with
+`compose_issue`, and produces a deterministic `plan_lines()` diff
+(install/keep/remove) keyed by closure-aware store identities — the `vyb
+system apply` dry-run. Next natural step: teach the realizer
+(`build/build-closure.vyb`) to execute that plan against a module-composed
+`SystemSpec` (it already validates via `plan.resolve_issue`); the convention,
+the graph framework, and the planner share the same `plan.vyb` types by
+construction, so this is a wiring change, not a new model.
