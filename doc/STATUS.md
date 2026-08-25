@@ -80,11 +80,19 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
    `--test`:
    - `bwrap` (default, unprivileged), `docker` (import + run) = container-rootfs
      boots (B1+B3-lite).
-   - `qemu` = **real kernel+initramfs self-boot (B4/Option A)**: boots the rootfs
-     as an initramfs under a fetched Linux kernel (Alpine 6.6 netboot
+   - `qemu` = **real kernel+initramfs self-boot (B4/Option A)**: boots the
+     rootfs as an initramfs under a fetched Linux kernel (Alpine 6.6 netboot
      `vmlinuz-virt`, cached in `build/kernel-cache/`) — reaches `VYBOS_READY` on
-     the serial console (TCG; no /dev/kvm here). Requires `/init` `+x` for kernel
-     execve. See PLAN_BOOTABLE_IMAGE.
+     the serial console (TCG; no /dev/kvm here). Requires `/init` `+x` for
+     kernel execve. See PLAN_BOOTABLE_IMAGE.
+10. **BUILD-STAGE derivation** — `build/build-derive.vyb`: the missing build
+    step (derivations were fetch-only). Realize source → gated build action
+    (`freedom{exec_run}` recipe) → content-address the OUTPUT `.bin` + `.meta.json`
+    (sourceUrl/sourceContentHash/buildRecipe/outputContentHash). Proven on
+    `build/samples/hello-vyb/main.c`: static ELF output, reproducible
+    (`outputContentHash` identical across two builds), runs. Foundation for
+    toolchain/busybox/Linux derivations + issue #4's `build.plan`.
+    See doc/PLAN-BUILD-DERIVATIONS.md.
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -145,6 +153,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 - [ ] **Module-system deepening**: service options (port, args) beyond
       `enabled`; `select`-validated dep kinds; possibly an `options`-style
       carrier struct per module.
+- [ ] **Build-stage derivations → kernels-from-source** (see
+      doc/PLAN-BUILD-DERIVATIONS.md): spike landed (hello-vyb, reproducible
+      output content-address). Next: toolchain-as-derivation, real fetched
+      source (busybox), then Linux kernel as the flagship — turning the fetched
+      QEMU vmlinuz into a *derived* VybOS kernel and giving issue #4's
+      `build.plan` a real `linux-<ver>-vyb` package to reference.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 

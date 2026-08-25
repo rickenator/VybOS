@@ -1,0 +1,127 @@
+// build-derive.vyb — VybOS BUILD-STAGE derivation spike.
+//
+// What this proves: the capability that kernels-from-source and issue #4's
+// build.plan both depend on — a derivation whose OUTPUT (not just its source)
+// is content-addressed. Today derivations are fetch-only: realize() fetches ->
+// content-hashes -> stores SOURCE blobs. This slice adds the missing BUILD
+// step: realize source -> run a gated compile action -> content-address the
+// BUILT artifact (.bin) + a .meta.json recording the build recipe.
+//
+// Deterministic + framework-aligned:
+//   - source: unrealized real C source (build/samples/hello-vyb/main.c),
+//     content-addressed into the flat store as `.src`.
+//   - build:  a SHELL recipe run under freedom{exec_run} in a scratch dir
+//             (same gated host-exec path build-rootfs uses for mkdir). The
+//             toolchain is the host cc/make for now — a real VybOS toolchain
+//             derivation is the follow-on.
+//   - output: the compiled ELF's actual bytes -> content_hash -> stored as
+//             `<outCA>-<name>-<ver>.bin`; reproducibility checked by building
+//             twice and comparing output addresses.
+//
+// Flat store (no mkdir RFE yet): each artifact is one file under store/.
+// Ranges are INCLUSIVE; artifact reading is byte-exact (binary-safe String).
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// run a host command (gated); returns exit code or -1 if it couldn't launch.
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+// Run one build of the package in a fresh scratch dir; returns the OUTPUT
+// content address (0 on any failure: clean-dir, write, recipe, or missing bin).
+// The recipe compiles buildRoot/main.c -> buildRoot/<binName>.
+build_artifact(buildRoot<String>, src<String>, name<String>, ver<String>,
+               recipe<String>, binName<String>)<Int> -> {
+    if (run("rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"") != 0) { return 0 }
+    if (!write_flat(buildRoot + "/main.c", src)) { return 0 }
+    if (run("cd \"" + buildRoot + "\" && " + recipe) != 0) { return 0 }
+    out<String> = read_flat(buildRoot + "/" + binName)
+    if (out.len() == 0) { return 0 }
+    return content_hash(out, name, ver)
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    name<String> = "hello-vyb"
+    ver<String> = "1.0"
+    srcPath<String> = "build/samples/hello-vyb/main.c"
+    recipe<String> = "cc -static main.c -o vybhello"
+    binName<String> = "vybhello"
+    srcUrl<String> = "local:build/samples/hello-vyb"
+
+    println("=== VybOS: BUILD-STAGE derivation (realize source -> build -> content-address OUTPUT) ===\n")
+    fails<Int> = 0
+
+    // 1. source materialization: read the real source, content-address it into store.
+    src<String> = read_flat(srcPath)
+    srcCA<Int> = content_hash(src, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + ".src"
+    fails = fails + check(src.len() > 0, "source read (" + src.len().to_string() + " bytes)")
+    fails = fails + check(write_flat(sSrc, src), "source content-addressed into store (.src)")
+    println("  source .src  : " + sSrc)
+
+    // 2. build twice in separate scratch dirs and compare OUTPUT content addresses.
+    out1<Int> = build_artifact("build/derive-out", src, name, ver, recipe, binName)
+    out2<Int> = build_artifact("build/derive-out2", src, name, ver, recipe, binName)
+    fails = fails + check(out1 > 0, "build action produced a content-addressed output")
+    fails = fails + check(out2 == out1, "REPRODUCIBLE: identical output content address (" + out1.to_string() + ")")
+
+    // 3. output realized into the flat store + metadata.
+    bin1<String> = read_flat("build/derive-out/" + binName)
+    oBin<String> = storeDir + "/" + out1.to_string() + "-" + name + "-" + ver + ".bin"
+    fails = fails + check(out1 > 0 && write_flat(oBin, bin1), "built output content-addressed into store (.bin)")
+
+    // ELF magic check (read-only, binary-safe): \x7f 'E' 'L' 'F'
+    elf<Bool> = false
+    if (bin1.len() >= 4 && bin1.char_at(0) == 127 && bin1.char_at(1) == 69 &&
+        bin1.char_at(2) == 76 && bin1.char_at(3) == 70) { elf = true }
+    fails = fails + check(elf, "output is an ELF executable (" + bin1.len().to_string() + " bytes)")
+
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
+        ", \"buildRecipe\": \"" + recipe + "\", \"outputContentHash\": " + out1.to_string() +
+        ", \"storePath\": \"/vyb/store/" + out1.to_string() + "-" + name + "-" + ver + ".bin\"}"
+    mPath<String> = storeDir + "/" + out1.to_string() + "-" + name + "-" + ver + ".meta.json"
+    fails = fails + check(write_flat(mPath, meta), "build metadata written (.meta.json)")
+    println("  output .bin  : " + oBin)
+    println("  meta         : " + mPath)
+
+    // 4. sanity: the built binary actually RUNS (prints to stdout, returns 0).
+    brc<Int> = run("./build/derive-out/" + binName)
+    fails = fails + check(brc == 0, "built binary runs (exit 0)")
+
+    println("  outputContentHash: " + out1.to_string())
+    println("")
+    sum<String> = "ALL BUILD-STAGE DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
