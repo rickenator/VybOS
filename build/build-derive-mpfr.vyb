@@ -1,0 +1,135 @@
+// build-derive-mpfr.vyb — VybOS TOOLCHAIN T0b: mpfr (multiple-precision
+// floating-point) as a build-stage derivation. mpfr is the 2nd GNU lib in the
+// bootstrapped toolchain (gcc needs gmp, mpfr, mpc). DEPENDS ON gmp.
+//
+// Pipeline (all vybey + a gated host build action):
+//   fetch GNU gmp + mpfr sources over verified TLS (.tar.xz)
+//   realize both SOURCES content-addressed into the flat store
+//   build gmp   : configure --prefix=<pfx> --disable-shared && make && make install
+//   build mpfr  : configure --prefix=<pfx> --with-gmp=<pfx> --disable-shared && make
+//   content-address the BUILT libmpfr.a + mpfr.h + dep-recording .meta.json
+//
+// Self-contained: builds its gmp dependency into a scratch prefix (a proper DAG
+// would consume the REALIZED gmp store artifact — a note for promotion).
+// mpfr's archive lands in src/.libs/libmpfr.a (mpfr builds in src/).
+// Flat store, binary-safe String IO.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import http::{HttpResponse}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+is_ar_archive(b<String>)<Bool> -> {
+    return b.len() >= 8 && b.char_at(0) == 33 && b.char_at(1) == 60 &&
+           b.char_at(2) == 97 && b.char_at(3) == 114 && b.char_at(4) == 99 &&
+           b.char_at(5) == 104 && b.char_at(6) == 62 && b.char_at(7) == 10
+}
+
+// fetch a URL's bytes over verified TLS ("" on failure) + realize into store.
+fetch_realize(storeDir<String>, url<String>, name<String>, ver<String>,
+              tag<String>)<Int> -> {
+    u<UrlSplit> = url_split(url)
+    r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+    if (r.status != 200) { return 0 }
+    ca<Int> = content_hash(r.body, name, ver)
+    if (!write_flat(storeDir + "/" + ca.to_string() + "-" + name + "-" + ver + "-" + tag + ".tar.xz", r.body)) { return 0 }
+    return ca
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    buildRoot<String> = "build/derive-mpfr-out"
+
+    gname<String> = "gmp";    gver<String> = "6.3.0"
+    mname<String> = "mpfr";   mver<String> = "4.2.1"
+    gUrl<String> = "https://gmplib.org/download/gmp/gmp-" + gver + ".tar.xz"
+    mUrl<String> = "https://www.mpfr.org/mpfr-" + mver + "/mpfr-" + mver + ".tar.xz"
+
+    println("=== VybOS TOOLCHAIN T0b: GNU mpfr (dep gmp) as a build-stage derivation ===\n")
+    fails<Int> = 0
+
+    // 1. fetch + realize both sources.
+    gCA<Int> = fetch_realize(storeDir, gUrl, gname, gver, "src")
+    fails = fails + check(gCA > 0, "gmp source fetched + realized (" + gCA.to_string() + ")")
+    mCA<Int> = fetch_realize(storeDir, mUrl, mname, mver, "src")
+    fails = fails + check(mCA > 0, "mpfr source fetched + realized (" + mCA.to_string() + ")")
+
+    gSrc<String> = storeDir + "/" + gCA.to_string() + "-" + gname + "-" + gver + "-src.tar.xz"
+    mSrc<String> = storeDir + "/" + mCA.to_string() + "-" + mname + "-" + mver + "-src.tar.xz"
+
+    // 2. build the gmp dependency into a scratch prefix. Capture $P (absolute
+    //    prefix) BEFORE any cd — $PWD after cd would point into the source dir.
+    gb<String> = "P=\"$PWD/" + buildRoot + "/gmp-pfx\" && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\"" +
+        " && tar xJf \"" + gSrc + "\" -C \"" + buildRoot + "\"" +
+        " && cd \"" + buildRoot + "/" + gname + "-" + gver + "\"" +
+        " && ./configure --prefix=\"$P\" --disable-shared" +
+        " && make -j4 && make install"
+    fails = fails + check(run(gb) == 0, "gmp dependency built into scratch prefix ($P)")
+
+    // 3. build mpfr against the (absolute) gmp prefix.
+    mb<String> = "P=\"$PWD/" + buildRoot + "/gmp-pfx\" && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "\"" +
+        " && cd \"" + buildRoot + "/" + mname + "-" + mver + "\"" +
+        " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --disable-shared" +
+        " && make -j4"
+    fails = fails + check(run(mb) == 0, "mpfr configured+built against gmp")
+
+    // 4. content-address the BUILT mpfr archive + header.
+    lib<String> = read_flat(buildRoot + "/" + mname + "-" + mver + "/src/.libs/libmpfr.a")
+    fails = fails + check(lib.len() > 300000, "built libmpfr.a non-trivial (" + lib.len().to_string() + " bytes)")
+    fails = fails + check(is_ar_archive(lib), "libmpfr.a is a valid ar archive")
+    outCA<Int> = content_hash(lib, mname, mver)
+    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + mname + "-" + mver + ".bin"
+    fails = fails + check(write_flat(oBin, lib), "built libmpfr.a content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+
+    hdr<String> = read_flat(buildRoot + "/" + mname + "-" + mver + "/src/mpfr.h")
+    fails = fails + check(hdr.len() > 1000, "mpfr.h header produced (" + hdr.len().to_string() + " bytes)")
+
+    // 5. metadata (records the gmp dependency output hash).
+    depGmp<String> = "gmp:" + gver
+    meta<String> = "{\"name\": \"" + mname + "\", \"version\": \"" + mver +
+        "\", \"sourceUrl\": \"" + mUrl + "\", \"sourceContentHash\": " + mCA.to_string() +
+        ", \"deps\": [\"" + depGmp + "\"], \"gmpSourceContentHash\": " + gCA.to_string() +
+        ", \"buildRecipe\": \"configure --with-gmp=<pfx> --disable-shared && make\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + mname + "-" + mver + ".bin\"}"
+    mPath<String> = storeDir + "/" + mname + "-" + mver + "-tool.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
+    println("  output .bin : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  deps        : gmp " + gver + " (scratch; store-input DAG is a follow-on)")
+    println("  meta        : " + mPath)
+    println("")
+    sum<String> = "ALL MPFR TOOLCHAIN-DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

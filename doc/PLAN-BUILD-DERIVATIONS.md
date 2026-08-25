@@ -51,6 +51,13 @@ mirroring Nix derivations.
      bootstraps the broken-up toolchain: **gmp → mpfr → mpc → binutils → gcc
      (C-only) → Linux kernel**. gmp has no build deps beyond a C compiler;
      archive is `.tar.xz` (build step unpacks with host tar).
+   - **1c. LANDED — mpfr (T0b)**: `build/build-derive-mpfr.vyb` builds
+     `libmpfr.a` against a gmp dependency. Gotchas encoded: GNU configure
+     rejects a relative `--prefix` (must be absolute), and `$PWD` must be
+     captured BEFORE any `cd` (else it points into the source dir); mpfr's
+     archive lands in `src/.libs/`. Source via `www.mpfr.org` (a host the
+     verified TLS client handles; some GNU hosts hang it — a client robustness
+     observation).
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via

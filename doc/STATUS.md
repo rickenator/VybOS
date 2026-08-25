@@ -110,6 +110,11 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     (valid ar) + `.meta.json`. First piece of the BROKEN-UP toolchain:
     **gmp → mpfr → mpc → binutils → gcc (C-only) → Linux kernel**. (Release 0.1
     = **"Brutal Dogfood"**; see doc/RELEASE-BRUTAL-DOGFOOD.md.)
+13. **TOOLCHAIN T0b (mpfr)** — `build/build-derive-mpfr.vyb`: `libmpfr.a` built
+    as a build-stage derivation against a gmp dependency. Content-addressed
+    (valid ar) + `.meta.json` records the dep. Encoded gotchas: absolute
+    `--prefix`, capture `$PWD` before `cd`, mpfr archive in `src/.libs/`, and a
+    source host the verified TLS client handles (some GNU hosts hang it).
 
 ## 3. GitHub issues filed against Vyb (this session)
 
