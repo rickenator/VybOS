@@ -12,14 +12,23 @@ VybOS uses an **isolated Vyb worktree**, not the main Vyb checkout:
 VYBU=~/Projects/Vyb-vybos          # branch vyb-os-stable
 VYB_STDLIB=$VYBU/stdlib
 VYB=$VYBU/build/vyb
-# (re)build the toolchain when Vyb main is cleaned/synced:
+# update the toolchain to Vyb's latest COMMITTED+PUSHED main:
+./build/sync-os-toolchain.sh       # fetches origin/main, ff + rebuild only if advanced
+# (or rebuild manually after a manual sync:)
 cd $VYBU && cmake --build build
 ```
 
-- **vyb-os-stable was synchronized to Vyb `main` (`cdbd17c`)** and the binary
-  rebuilt this session (2026-08-24, 21:04). All 7 VybOS slices PASS on it.
-- Decision still open: keep `vyb-os-stable` **pinned** to `cdbd17c` for
-  stability against future impl-agent churn, vs let it ride `main`.
+- **vyb-os-stable tracks `origin/main` ONLY when Vyb main is committed AND
+  pushed** (never the local `~/Projects/Vyb` checkout, which can carry
+  uncommitted or committed-but-unpushed impl-agent churn). Enforced by
+  `build/sync-os-toolchain.sh`: fetches the remote, fast-forwards
+  `vyb-os-stable` to `origin/main` + rebuilds `build/vyb` only when new
+  commits have been pushed; refuses on divergence; no-op when the remote is
+  unreachable (stable stays). `./build/sync-os-toolchain.sh`.
+  As of this session it is at `cdbd17c` = origin/main, and all 7 VybOS slices
+  PASS on the rebuilt binary.
+- Decision that was OPEN is now resolved: **track main (pushed-state bound)**,
+  not a hard pin.
 
 Run a VybOS slice:
 ```sh
