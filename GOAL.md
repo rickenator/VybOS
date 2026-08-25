@@ -43,10 +43,24 @@ ACTUAL source bytes (content address) → materialize into `store/` →
 reproducible store paths. Store layout settled in `doc/STORE-LAYOUT.md`.
 Realised via `build/build-store.vyb` using the `http_get_full` client.
 
-**M2 (in progress)**: real dependency graph → materialize a transitive closure,
-add per-derivation metadata (`.drv`-style) — **closure realization + flat-store
-`.meta.json` landed 2026-08-24** (`build/build-closure.vyb`; graph framework
-promoted into `modules/plan.vyb`; transitive-bump + reproducibility verified).
-Remaining M2: nested store (needs `mkdir` in the runtime), HTTPS/tarball fetch,
-generations/rollback. Blockers listed in `doc/STORE-LAYOUT.md` →
-`doc/NIXOS-BORROWINGS.md`.
+**M2 (done 2026-08-24)**: real dependency graph → materialize a transitive
+closure with `.drv`-style metadata, a generation store with rollback, and real
+package source-tree realization from a gzipped POSIX tar.
+
+- **Closure realizer** `build/build-closure.vyb` (graph framework in
+  `modules/plan.vyb`): topological resolve → closure-aware store identities →
+  fetch in dep order → `.meta.json`. Reproducible; transitive-bump verified.
+- **Generations** `build/generations.vyb`: append-only `index.json` ledger,
+  per-generation spec + reachable-paths set, ancestor-chain rollback validity.
+  All invariants pass.
+- **Source-tree realization** `build/build-package.vyb` via the stdlib
+  `archive` module (gzip inflate + POSIX tar extract, byte-verified): members
+  content-addressed by real bytes into the flat store + tree manifest.
+
+Remaining M2 pieces: nested store (needs the `mkdir` RFE; the tree realizer
+flattens member paths for now), and URL→(host,port,path) parsing so
+`build/build-package.vyb` can point at `https_get_full` bytes instead of a
+local tar.gz. A Vyb compiler regression hit mid-M2 (uncommitted deep-copy
+edits double-freed the graph code) — escalated as `rickenator/Vyb#184`, fixed
+upstream (`7a4b4a8`), toolchain rebound here, all slices re-verified. Blockers
+listed in `doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.

@@ -24,6 +24,13 @@ struct RealRec { name<String>, real<Int> }
 share(all)
 struct Generation { id<Int>, parent<Int?>, hash<Int> }
 
+// One row of the append-only generation ledger (index.json): id, parent id
+// (0 for the root generation), and that generation's whole-system content
+// digest (spec_digest). This is the persistent form of `Generation` — a flat
+// record the realizer can write/read without optional fields.
+share(all)
+struct GenEntry { id<Int>, parent<Int>, digest<Int> }
+
 // index of first pkg named `name`, or -1.
 share(all)
 find_pkg(pkgs<Vec<Pkg>>, name<String>)<Int> -> {
@@ -245,6 +252,8 @@ real_table(g<Vec<Pkg>>)<Vec<RealRec>> -> {
 }
 
 // whole-system digest (generation identity): fold every closure-aware real.
+// Normalized to non-negative (like realize_hash) so a generation's digest is
+// a stable, positive store-style identity, not a signed FNV fold.
 share(all)
 spec_digest(spec<SystemSpec>)<Int> -> {
     recs<Vec<RealRec>> = real_table(spec.pkgs)
@@ -253,6 +262,7 @@ spec_digest(spec<SystemSpec>)<Int> -> {
     if (n > 0) {
         for (i in 0..n-1) { acc = (acc * 16777619) ^ recs.get(i).real }
     }
+    if (acc < 0) { acc = -acc }
     return acc
 }
 

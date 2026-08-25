@@ -27,19 +27,36 @@ bytes (content-address), materializes them into `store/`, and prints stable
 store paths — verified **reproducible across runs**. A real boot/system image
 is not built yet.
 
-**M2 step landed (2026-08-24):** a real dependency-**closure** realizer.
-`build/build-closure.vyb` walks a typed dependency graph in topological order,
-fetches each source, and writes every derivation as a source blob plus a
-per-derivation `.meta.json` (the `.drv` analogue: name/version/source, real
-content hash of the fetched bytes, closure-aware store identity, and the
-closure of direct inputs with store paths). The graph resolvers/planners were
-promoted into `modules/plan.vyb` so every entry program shares one audited
-implementation. Verified on `build/vyb`: reproducible across runs, and a
-transitive dep bump changes exactly the affected closure's store paths.
+**M2 done (2026-08-24).** Dependency graph → real materialization of a
+transitive **closure** with `.drv`-style metadata, a **generation store with
+rollback**, and **real package source-tree realization** via the stdlib
+`archive` module (gzip inflate + POSIX tar extraction, byte-verified). All run
+under `build/vyb` with reproducible store paths.
 
-Also see `doc/NIXOS-BORROWINGS.md` (the "weird fork / chopsticks" build-idea
-map), `doc/VYB-LANGUAGE-NOTES.md` (verified Vyb gotchas), and
-`doc/STORE-LAYOUT.md` (store-layout decision + blockers).
+- **`build/build-closure.vyb`** — walks a typed dependency graph in
+  topological order, fetches each source, writes a source blob + per-derivation
+  `.meta.json` (name/version/source, real content hash, closure-aware store
+  identity, input closure w/ paths). Reproducible; a transitive dep bump
+  changes exactly the affected closure's store paths.
+- **`build/generations.vyb`** — generation store + rollback bookkeeping
+  (pure Vyb, offline): an append-only `index.json` ledger (`cur=` + one
+  `id|parent|digest` row per generation), a serialized `SystemSpec` and its
+  reachable store-path set per generation, and an ancestor-chain rollback
+  validity check. All invariants verified.
+- **`build/build-package.vyb`** — realises a package **source tree** from a
+  gzipped POSIX tar using the stdlib `archive` module: extracts members,
+  content-addresses each by its real inflated bytes, writes them into the flat
+  store, plus a `.meta.json` tree manifest. Every member verified
+  byte-identical to its true source. Deterministic + content-addressed
+  (a member change → new addresses).
+
+A **compiler regression** (uncommitted in-flight deep-copy/ownership edits
+double-freed on the graph code during this session) was escalated as
+`rickenator/Vyb#184` and fixed upstream (`7a4b4a8`); this repo's M2 slices all
+re-verified after rebounding the toolchain to the fixed commit.
+
+Also see `doc/NIXOS-BORROWINGS.md`, `doc/VYB-LANGUAGE-NOTES.md`, and
+`doc/STORE-LAYOUT.md`.
 
 ## Conceptual Shape
 
@@ -83,6 +100,16 @@ VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
 # M2 step — realise a real dependency CLOSURE with .drv-style .meta.json:
 VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
   /home/rick/Projects/Vyb/build/vyb build/build-closure.vyb --module-path modules
+
+# M2 — generation store + rollback bookkeeping (pure Vyb, offline):
+mkdir -p generations   # runtime state (gitignored)
+VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
+  /home/rick/Projects/Vyb/build/vyb build/generations.vyb --module-path modules
+
+# M2 — real package source-tree realization (archive inflate + tar extract):
+bash build/samples/make_samples.sh      # build the deterministic source tar.gz
+VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
+  /home/rick/Projects/Vyb/build/vyb build/build-package.vyb --module-path modules
 ```
 
 ## Source Of Truth
@@ -97,13 +124,16 @@ VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
 
 - [x] M0: `SystemSpec` + `system.vyb` JIT-evaluating to a concrete spec.
 - [x] M1: store layout decision + first real derivation (fetch → hash → store file).
-- [~] M2 store slice (partial): real dependency-graph materialization + per-derivation `.drv`-style `.meta.json` are done in the flat store (`build/build-closure.vyb`); **nested** store still waits on the runtime gaining `mkdir` (RFE-M2 #1).
-- [x] Real crypto digest / HTTPS-fetch gaps scoped — drafted `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) for the Vyb implementation agent; HTTPS itself already landed in stdlib.
-- [ ] URL→(host,port,path) parsing in stdlib (Item 4 of `doc/RFE-M2.md`); HTTPS fetch itself already works.
-- [ ] Generations/profiles + atomic switch/rollback.
+- [x] M2: real dependency-closure materialization + `.drv`-style metadata (`build/build-closure.vyb`).
+- [x] M2: generation store + rollback bookkeeping (`build/generations.vyb`).
+- [x] M2: real package **source-tree** realization via stdlib `archive` (`build/build-package.vyb`).
+- [~] M2: nested store still waits on the runtime gaining `mkdir` (RFE-M2 #1); the tree realizer flattens member paths into the flat store for now.
+- [x] Real crypto digest / HTTPS-fetch gaps scoped — `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) drafted for the Vyb implementation agent; gzip+tar **extraction** landed in the stdlib `archive` module; HTTPS itself already works.
+- [ ] URL→(host,port,path) parsing in stdlib (Item 4 of `doc/RFE-M2.md`); when landed, point `build/build-package.vyb` at `https_get_full` bytes instead of a local tar.gz.
+- [x] Generations/profiles + rollback bookkeeping (atomic symlink switch still awaits the `rename`/`symlink` RFE — current pointer is a file rewrite).
 - [ ] Define the module composition convention (how `modules/*` combine).
 - [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.
-- [ ] Init GitHub repo (no remote yet).
+- [x] Init GitHub repo (remote configured: `rickenator/VybOS`). Local commits (incl. M2) await push approval; Vyb toolchain regression escalated & fixed as `rickenator/Vyb#184`.
 
 ## Notes
 

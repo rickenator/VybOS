@@ -5,3 +5,6 @@
 
 # Realised store is a build cache (regenerated), not source.
 store/
+
+# Generation ledger is runtime state (regenerated), not source.
+generations/
