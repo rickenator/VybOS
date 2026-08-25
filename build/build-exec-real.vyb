@@ -19,8 +19,10 @@
 //   openssh 9.8p1  https://cdn.openbsd.org/.../openssh-9.8p1.tar.gz   (~1.9MB)
 //   vim 9.1        https://codeload.github.com/vim/vim/tar.gz/.../v9.1.0 (~17MB)
 //   nginx 1.26.2   https://nginx.org/download/nginx-1.26.2.tar.gz     (~1.2MB)
-// vim's source is the DIRECT codeload endpoint, because github's /archive/
-// URL 302-redirects (the verified client does not follow redirects).
+// vim's source is the DIRECT codeload endpoint (github.com/.../archive/v9.1
+// is not an exact ref; refs/tags/v9.1.0 is). Now that #194 is fixed (5656c62),
+// the canonical github.com/<o>/<r>/archive/refs/tags/v9.1.0.tar.gz would work
+// too (redirects followed, bounded 10 hops); the direct URL stays for fewer hops.
 //
 // NOTE: this slice REALLY downloads ~20MB over TLS each run — it is the honest
 // end-to-end integration slice, not a fast deterministic unit slice.

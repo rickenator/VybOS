@@ -25,7 +25,7 @@ cd $VYBU && cmake --build build
   `vyb-os-stable` to `origin/main` + rebuilds `build/vyb` only when new
   commits have been pushed; refuses on divergence; no-op when the remote is
   unreachable (stable stays). `./build/sync-os-toolchain.sh`.
-  As of this session it is at `b31445c` = origin/main, and all VybOS slices
+  As of this session it is at `5656c62` = origin/main, and all VybOS slices
   PASS on the rebuilt binary.
 - Decision that was OPEN is now resolved: **track main (pushed-state bound)**,
   not a hard pin.
@@ -94,11 +94,16 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
   #191 (archive inflate O(N²) one-byte concat → O(N) Vec-buffer; runtime string
   registry probe chains bounded via rehash-on-churn). This unblocks real-HTTPS
   source-TREE realization (see §4).
-- **#194 (filed this session)** — the `http`/`https` fetch clients do NOT follow
-  HTTP redirects (302), and `HttpResponse` exposes no `Location`. GitHub's
-  `/archive/<ref>.tar.gz` URL 302-redirects to codeload, so such `source` URLs
-  can never be realised over genuine TLS; VybOS points vim at the direct codeload
-  endpoint as a workaround. RFE: bounded redirect following, OR expose `Location`.
+- **#194 (filed, then FIXED 2026-08-25)** — the `http`/`https` fetch clients
+  originally did NOT follow HTTP redirects (302) and exposed no `Location`, so
+  GitHub's `/archive/<ref>.tar.gz` URL (302 → codeload) could not be realised
+  over genuine TLS; VybOS pointed vim at the direct codeload endpoint. Impl
+  agent fixed it in toolchain `5656c62`: **same-scheme redirects are now
+  followed, bounded to 10 hops**, and `Location` is exposed on `HttpResponse`.
+  Verified: `github.com/sharkdp/fd/archive/refs/heads/master.tar.gz` and
+  `github.com/vim/vim/archive/refs/tags/v9.1.0.tar.gz` now fetch 200 (bytes
+  match codeload). The codeload workaround in `modules/vim.vyb` still works but
+  is no longer required.
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
