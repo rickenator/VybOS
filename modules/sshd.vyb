@@ -1,0 +1,18 @@
+// sshd.vyb — VybOS example module: the OpenSSH server service.
+//
+// Demonstrates the composition convention (doc/COMPOSITION.md): a module is
+// a share(all) function that takes its OWN options and returns a Module
+// contribution. When `enabled` is false it returns the EMPTY module, so
+// toggling the whole module off is a one-line call-site edit.
+import collections
+import compose::{Module, empty_module, mk_pkg, mk_service, with_pkg, with_service}
+
+share(all)
+sshd(enabled<Bool>)<Module> -> {
+    m<Module> = empty_module()
+    if (enabled) {
+        m = with_pkg(m, mk_pkg("openssh", "9.8", "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-9.8p1.tar.gz", Vec()))
+        m = with_service(m, mk_service("sshd", "/run/current-system/sw/sbin/sshd"))
+    }
+    return m
+}

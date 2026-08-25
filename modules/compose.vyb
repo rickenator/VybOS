@@ -1,0 +1,174 @@
+// compose.vyb — VybOS module-composition framework (M3 seed).
+//
+// SCOPE: defines HOW `modules/*` combine into a machine's SystemSpec. This is
+// the NixOS `options`/`config` idea carried into vybey, minus the interpreter:
+// there is no meta-DSL — a "module" is just a typed function that returns a
+// `Module` contribution, and composition is a fold over those contributions.
+//
+// The convention a module author follows (doc/COMPOSITION.md):
+//   1. put the module in `modules/<name>.vyb`;
+//   2. export `share(all)` function(s) that take the module's OWN options
+//      (e.g. `enabled<Bool>`, tuning params) and return a `Module`;
+//   3. build the contribution with the small constructor kit below —
+//      `empty_module()` then `with_pkg`/`with_service` (or pass them straight
+//      in) — never reach past into plan's internals;
+//   4. an `enabled=false` / "off" option returns the EMPTY module (no-op
+//      contribution), so toggling a module on/off is just a call-site edit.
+//
+// Composition is a pure fold: `compose(base, mods)` concatenates every
+// module's pkgs and services into the base SystemSpec. It can't mutate in
+// place (Vyb's nested-in-place accessor mutation is a no-op), so it builds
+// fresh aggregated Vecs — deterministic and side-effect-free.
+//
+// Validation is a separate, idempotent gate a realizer/activator runs BEFORE
+// any side effect: `compose_issue(spec)` returns a non-empty String if the
+// merged system has a duplicate package, a duplicate enabled service, an
+// unknown dependency, or a dependency cycle (reusing plan.resolve_issue).
+//
+// NOTE: Vyb ranges are INCLUSIVE of the upper bound; iterate with 0..len-1 and
+// guard empties, or you read one-past-the-buffer (double-free).
+import collections
+import plan::{Pkg, Service, SystemSpec, Dep, dep_key, realize_hash, resolve_issue}
+
+// What ONE module contributes to the system: zero or more packages and zero
+// or more services. Data only; a module builds one of these and returns it.
+share(all)
+struct Module {
+    pkgs<Vec<Pkg>>,
+    services<Vec<Service>>
+}
+
+// The empty contribution — identity element for composition ("module off").
+share(all)
+empty_module()<Module> -> {
+    return Module { pkgs = Vec(), services = Vec() }
+}
+
+// Construct a typed dependency edge with a `select`-checkable kind String.
+share(all)
+dep(name<String>, kind<String>)<Dep> -> {
+    return Dep { name = name, kind = kind }
+}
+
+// Build a Pkg whose storePath is content-derived from (name, version, source,
+// dep-key) via plan.realize_hash — so identical module inputs dedupe to the
+// same store path and a real input change yields a new one.
+share(all)
+mk_pkg(name<String>, version<String>, source<String>, deps<Vec<Dep>>)<Pkg> -> {
+    h<Int> = realize_hash(name, version, source, dep_key(deps))
+    sp<String> = "/vyb/store/" + h.to_string() + "-" + name + "-" + version
+    return Pkg { name = name, version = version, source = source, deps = deps, storePath = sp }
+}
+
+// Construct an enabled Service entry.
+share(all)
+mk_service(name<String>, command<String>)<Service> -> {
+    return Service { name = name, command = command, enabled = true }
+}
+
+// Pure appenders: return a NEW Module with one pkg/service added. The input
+// `m` is left untouched (Vyb passes structs by value), so these compose
+// freely without aliasing surprises.
+share(all)
+with_pkg(m<Module>, p<Pkg>)<Module> -> {
+    m.pkgs.push(p)
+    return m
+}
+
+share(all)
+with_service(m<Module>, s<Service>)<Module> -> {
+    m.services.push(s)
+    return m
+}
+
+// A blank base SystemSpec to compose modules onto.
+share(all)
+blank_system(system<String>, hostname<String>)<SystemSpec> -> {
+    return SystemSpec { system = system, hostname = hostname, pkgs = Vec(), services = Vec() }
+}
+
+// Fold `mods` (in order) into `base`, concatenating pkgs and services. Pure:
+// returns a fresh SystemSpec, deterministic, order-preserving.
+share(all)
+compose(base<SystemSpec>, mods<Vec<Module>>)<SystemSpec> -> {
+    pkgs<Vec<Pkg>> = base.pkgs
+    svcs<Vec<Service>> = base.services
+    n<Int> = mods.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            mp<Vec<Pkg>> = mods.get(i).pkgs
+            mq<Int> = mp.len()
+            if (mq > 0) {
+                for (k in 0..mq-1) { pkgs.push(mp.get(k)) }
+            }
+            ms<Vec<Service>> = mods.get(i).services
+            mw<Int> = ms.len()
+            if (mw > 0) {
+                for (k in 0..mw-1) { svcs.push(ms.get(k)) }
+            }
+        }
+    }
+    return SystemSpec {
+        system = base.system,
+        hostname = base.hostname,
+        pkgs = pkgs,
+        services = svcs
+    }
+}
+
+// index of first pkg in `spec` named `name`, or -1.
+share(all)
+pkg_index(spec<SystemSpec>, name<String>)<Int> -> {
+    pkgs<Vec<Pkg>> = spec.pkgs
+    n<Int> = pkgs.len()
+    if (n > 0) {
+        for (i in 0..n-1) { if (pkgs.get(i).name == name) { return i } }
+    }
+    return -1
+}
+
+// index of first ENABLED service named `name`, or -1.
+share(all)
+service_index(spec<SystemSpec>, name<String>)<Int> -> {
+    svcs<Vec<Service>> = spec.services
+    n<Int> = svcs.len()
+    if (n > 0) {
+        for (i in 0..n-1) { if (svcs.get(i).name == name && svcs.get(i).enabled) { return i } }
+    }
+    return -1
+}
+
+// Validation gate: empty String == the merged system is clean. Non-empty == a
+// reason composition must NOT be realised (a realizer/activator checks this
+// before any side effect). Checks, in order: duplicate package name, duplicate
+// enabled service name, then plan's own unknown-dep/cycle check.
+share(all)
+compose_issue(spec<SystemSpec>)<String> -> {
+    pkgs<Vec<Pkg>> = spec.pkgs
+    n<Int> = pkgs.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            if (i > 0) {
+                for (j in 0..i-1) {
+                    if (pkgs.get(i).name == pkgs.get(j).name) {
+                        return "duplicate package: " + pkgs.get(i).name
+                    }
+                }
+            }
+        }
+    }
+    svcs<Vec<Service>> = spec.services
+    m<Int> = svcs.len()
+    if (m > 0) {
+        for (i in 0..m-1) {
+            if (svcs.get(i).enabled && i > 0) {
+                for (j in 0..i-1) {
+                    if (svcs.get(j).enabled && svcs.get(i).name == svcs.get(j).name) {
+                        return "duplicate service: " + svcs.get(i).name
+                    }
+                }
+            }
+        }
+    }
+    return resolve_issue(spec.pkgs)
+}

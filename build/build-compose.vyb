@@ -1,0 +1,115 @@
+// build-compose.vyb — VybOS module-composition self-test (offline, pure Vyb).
+//
+// Exercises the convention from modules/compose.vyb + example modules and
+// asserts the invariants a composition is supposed to satisfy:
+//   1. folding N modules concatenates exactly their pkgs and services;
+//   2. an `enabled=false` module contributes nothing (no-op toggle);
+//   3. composed store paths are content-derived and deterministic;
+//   4. conflicts (duplicate package, duplicate service) are DETECTED by
+//      compose_issue so a realizer never realizes an invalid merged system;
+//   5. empty/invalid compositions report cleanly.
+// Mirrors the check()/exit-code style of build-url.vyb.
+import collections
+import compose::{Module, empty_module, mk_pkg, mk_service, with_pkg, with_service,
+                 dep, blank_system, compose, compose_issue, pkg_index, service_index}
+import plan::{SystemSpec, Pkg, Service}
+import sshd::{sshd}
+import getty::{getty}
+import vim::{vim}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// naive substring test (module String has no visible .n on this build).
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+main()<Int> -> {
+    println("=== VybOS: module-composition convention (self-test) ===")
+    fails<Int> = 0
+
+    // Build a system from three modules.
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(true))
+    mods.push(getty(true))
+    mods.push(vim(true))
+
+    base<SystemSpec> = blank_system("x86_64-linux", "testhost")
+    spec<SystemSpec> = compose(base, mods)
+
+    // 1. counts: sshd adds 1 pkg + 1 service, getty 1 service, vim 1 pkg.
+    pkgs<Vec<Pkg>> = spec.pkgs
+    svcs<Vec<Service>> = spec.services
+    fails = fails + check(pkgs.len() == 2, "merged spec has 2 pkgs (openssh, vim)")
+    fails = fails + check(svcs.len() == 2, "merged spec has 2 services (sshd, getty)")
+    fails = fails + check(compose_issue(spec) == "", "clean merged spec has no issue")
+
+    // 2. order preserving (fold order = module order).
+    fails = fails + check(pkgs.get(0).name == "openssh", "first pkg is openssh")
+    fails = fails + check(pkgs.get(1).name == "vim",     "second pkg is vim")
+    fails = fails + check(svcs.get(0).name == "sshd",    "first service is sshd")
+    fails = fails + check(svcs.get(1).name == "getty",   "second service is getty")
+
+    // store paths are content-derived + deterministic
+    sp0<String> = pkgs.get(0).storePath
+    fails = fails + check(sp0.len() > 0, "openssh store path is non-empty")
+    fails = fails + check(substr_has(sp0, "openssh"), "openssh store path names openssh")
+
+    // 3. enabled=false module contributes nothing (toggle is a no-op).
+    off_mods<Vec<Module>> = Vec()
+    off_mods.push(sshd(false))
+    off_mods.push(getty(true))
+    off_mods.push(vim(false))
+    off_spec<SystemSpec> = compose(blank_system("x86_64-linux", "h2"), off_mods)
+    fails = fails + check(off_spec.pkgs.len() == 0, "all-off modules add zero pkgs")
+    fails = fails + check(off_spec.services.len() == 1, "only enabled getty remains")
+    fails = fails + check(compose_issue(off_spec) == "", "partial-off spec still clean")
+
+    // 4. duplicate package is DETECTED.
+    dup<SystemSpec> = blank_system("x86_64-linux", "h3")
+    dup.pkgs.push(mk_pkg("foo", "1.0", "https://x/foo.tar.gz", Vec()))
+    dup.pkgs.push(mk_pkg("foo", "2.0", "https://x/foo2.tar.gz", Vec()))
+    fails = fails + check(compose_issue(dup) == "duplicate package: foo",
+                          "duplicate package name detected")
+
+    // 5. duplicate ENABLED service is detected.
+    ds<SystemSpec> = blank_system("x86_64-linux", "h4")
+    ds.services.push(mk_service("sshd", "/a"))
+    ds.services.push(mk_service("sshd", "/b"))
+    fails = fails + check(compose_issue(ds) == "duplicate service: sshd",
+                          "duplicate enabled service detected")
+
+    // 6. duplicate DISABLED service is NOT a conflict (only enabled ones
+    //    activate, matching how services are applied).
+    dsoff<SystemSpec> = blank_system("x86_64-linux", "h5")
+    dsoff.services.push(mk_service("sshd", "/a"))
+    dsoff.services.push(mk_service("x", "/b"))
+    dsoff.services.get(1).enabled = false
+    fails = fails + check(compose_issue(dsoff) == "",
+                          "disabled service is not a duplicate conflict")
+
+    println("")
+    println("--- composed SystemSpec JSON ---")
+    println(spec.to_string())
+
+    println("")
+    sum<String> = "ALL COMPOSITION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

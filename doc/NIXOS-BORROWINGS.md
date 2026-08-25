@@ -17,7 +17,7 @@ idea below is a NixOS mechanism we intend to carry over into Vyb-shaped code.
 | Rollback — flip the profile symlink | same | not built |
 | `/run/current-system` — pointer to the active generation | `/run/current-system` (already used as service path in M0) | not built |
 | Flakes + `flake.lock` — pinned, reproducible inputs | pinned source manifest (e.g. `spec.lock`) | not built |
-| Module system (`options`/`config`) — compose N modules into one config | Vyb module composition (`modules/*`) with type-safe structs | M0: skeleton |
+| Module system (`options`/`config`) — compose N modules into one config | Vyb module composition (`modules/*`) with type-safe structs | M0: skeleton; M2/M3: `modules/compose.vyb` (fold + `compose_issue` gate) + `doc/COMPOSITION.md` |
 | Build sandbox / pure builds (buildFHSEnv, restricted network) | isolation via build container/QEMU | not built |
 | System closure — the full transitive dep set of a generation | transitive derivation closure in Vyb | not built |
 

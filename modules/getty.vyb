@@ -1,0 +1,14 @@
+// getty.vyb — VybOS example module: a serial console getty on tty1.
+//
+// Module that contributes ONLY a service (no package — agetty ships with the
+// base system). Demonstrates a service-only module behind an enable flag.
+import compose::{Module, empty_module, mk_service, with_service}
+
+share(all)
+getty(enabled<Bool>)<Module> -> {
+    m<Module> = empty_module()
+    if (enabled) {
+        m = with_service(m, mk_service("getty", "/run/current-system/sw/bin/agetty --noclear tty1"))
+    }
+    return m
+}

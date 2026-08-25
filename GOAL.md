@@ -68,6 +68,16 @@ edits double-freed the graph code) — escalated as `rickenator/Vyb#184`, fixed
 upstream (`7a4b4a8`), all slices re-verified. Blockers listed in
 `doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.
 
+**Module composition (2026-08-24):** the *how `modules/*` combine* piece of
+M2/M3 landed — `modules/compose.vyb` (a `Module` contribution type, a pure
+`compose` fold over module functions, and a `compose_issue` validation gate),
+example modules (`sshd`/`getty`/`vim`), a 15-invariant self-test
+(`build/build-compose.vyb`), and `doc/COMPOSITION.md`. `config/system.vyb` now
+assembles the machine by folding module contributions. This is the NixOS
+`options`/`config` idea in vybey: a module is a typed function (params are its
+options), so there is no options schema to interpret — the call site is the
+declaration.
+
 **Toolchain isolation (2026-08-24)**: VybOS now builds/runs against an
 **isolated Vyb worktree** — `~/Projects/Vyb-vybos` (branch `vyb-os-stable`,
 pinned to the fixed commit) — created via

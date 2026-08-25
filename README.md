@@ -98,6 +98,9 @@ VYB=$VYBU/build/vyb
 cd ~/Projects/VybOS
 $VYB config/system.vyb --module-path modules
 
+# Module composition convention (pure Vyb, offline) — 15 invariant self-test:
+$VYB build/build-compose.vyb --module-path modules
+
 # M1 — realise derivations: real fetch -> content-addressed store (needs network):
 mkdir -p store   # store/ is gitignored (build cache)
 $VYB build/build-store.vyb --module-path modules
@@ -138,9 +141,9 @@ $VYB build/build-package-url.vyb --module-path modules
 - [x] M2: real package **source-tree** realization via stdlib `archive` (`build/build-package.vyb`).
 - [~] M2: nested store still waits on the runtime gaining `mkdir` (RFE-M2 #1); the tree realizer flattens member paths for now.
 - [~] M2: URL→(host,port,path) parsing done **framework-side** (`modules/url.vyb` + `build/build-url.vyb` acceptance vectors, `build/build-package-url.vyb` URL-driven realizer); a stdlib `url` module stays an impl-agent RFE (Item 4) — VybOS no longer waits on it.
+- [x] Module-composition convention: how `modules/*` combine — `modules/compose.vyb` (`Module`, `compose`, `compose_issue` gate) + example modules (`sshd`, `getty`, `vim`) + self-test (`build/build-compose.vyb`, 15 invariants) + `doc/COMPOSITION.md`; `config/system.vyb` now assembles the machine by folding modules.
 - [x] Real crypto digest / HTTPS-fetch gaps scoped — `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) drafted for the Vyb implementation agent; gzip+tar **extraction** landed in the stdlib `archive` module; HTTPS itself already works.
 - [x] Generations/profiles + rollback bookkeeping (atomic symlink switch still awaits the `rename`/`symlink` RFE — current pointer is a file rewrite).
-- [ ] Define the module composition convention (how `modules/*` combine).
 - [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.
 - [x] Init GitHub repo (remote configured: `rickenator/VybOS`). Local commits (incl. M2) await push approval; Vyb toolchain regression escalated & fixed as `rickenator/Vyb#184`.
 

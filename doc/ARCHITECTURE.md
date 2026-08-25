@@ -401,3 +401,25 @@ yet struct-field types**.
     stays fixed).
   The realizer is still **flat** store (no `mkdir` needed yet); **nested**
   layout awaits RFE-M2 #1. HTTPS/tar/URL parsing remain RFE-M2 #3/#4.
+
+### §0.2 Status addendum (2026-08-24, module composition)
+
+- **Module-composition convention** landed so `modules/*` actually combine
+  into a machine, answering the "how modules combine" open item. Framework:
+  `modules/compose.vyb` — `Module { pkgs<Vec<Pkg>>, services<Vec<Service>> }`,
+  `empty_module()`, pure appenders `with_pkg`/`with_service`, constructors
+  `mk_pkg`/`mk_service`/`dep` (store paths content-derived via
+  `realize_hash`), `blank_system()`, a pure ordered `compose(base, mods)` fold,
+  and a `compose_issue(spec)` validation gate (duplicate pkg / duplicate
+  *enabled* service / unknown-dep / cycle via `plan.resolve_issue`).
+- Example modules `modules/{sshd,getty,vim}.vyb` demonstrate the convention
+  (service+package, service-only, package-only; each behind an `enabled` flag
+  that returns the empty module when off — a one-line call-site toggle).
+- `config/system.vyb` now assembles the machine by folding those modules;
+  `build/build-compose.vyb` is a 15-invariant self-test, all PASS on
+  `build/vyb`. Design rationale in `doc/COMPOSITION.md`.
+- This is the NixOS `options`/`config` idea in vybey minus the interpreter: a
+  module is a typed function, its parameters ARE its options, so there is no
+  options schema to interpret — composition is a fold over typed
+  contributions, and `compose_issue` is the checked validation gate a realizer
+  runs before any side effect.
