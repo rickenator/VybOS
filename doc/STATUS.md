@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-24 (end of HTTPS-URL realization session)
+> last_updated: 2026-08-25 (toolchain sync → real-HTTPS source-tree realization)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -25,7 +25,7 @@ cd $VYBU && cmake --build build
   `vyb-os-stable` to `origin/main` + rebuilds `build/vyb` only when new
   commits have been pushed; refuses on divergence; no-op when the remote is
   unreachable (stable stays). `./build/sync-os-toolchain.sh`.
-  As of this session it is at `cdbd17c` = origin/main, and all 7 VybOS slices
+  As of this session it is at `0c45003` = origin/main, and all 8 VybOS slices
   PASS on the rebuilt binary.
 - Decision that was OPEN is now resolved: **track main (pushed-state bound)**,
   not a hard pin.
@@ -61,6 +61,9 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 6. **Real HTTPS** — `modules/urlrealize.vyb`: parses a pkg's own `source` URL
    (`url_split`), picks http/https transport by scheme, verified-TLS fetch,
    content-address into store. `build/build-url-realize.vyb` (9 invariants).
+7. **Real HTTPS source-TREE** — `build/build-real-tree.vyb`: fetch a REAL GitHub
+   tarball over verified TLS → inflate → extract → 59 file members realised
+   content-addressed + `.tree.json` manifest (10 invariants).
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -70,14 +73,27 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 - **#189** — `VYB_STR_REG_CAP` cannot raise the string registry above 262144
   (clamped to fixed array); multi-MB workloads abort, error message promises an
   impossible fix. Distinct from closed #162 (safety); this is the "can't enlarge".
+  STILL OPEN (aug 25); #191 largely sidesteps it for realistic sources.
+- **#190 / #191 / #192 (closed in the 2026-08-25 sync)** — impl agent fixed the
+  codegen ownership-reclaim gaps (#190, #192) and the root cause that blocked us:
+  #191 (archive inflate O(N²) one-byte concat → O(N) Vec-buffer; runtime string
+  registry probe chains bounded via rehash-on-churn). This unblocks real-HTTPS
+  source-TREE realization (see §4).
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
-- [ ] **Real-HTTP(S) source-TREE realization**: wire `urlrealize.fetch_url` into
-      the `archive` inflate+extract path so a module-composed spec realises a
-      full source *tree* from a real GitHub tarball (build-package-url shows the
-      tree path). **Blocked in practice by issue #189** — large archives exhaust
-      the string registry; use small sources or wait for the registry fix.
+- [x] **Real-HTTP(S) source-TREE realization**: `build/build-real-tree.vyb`
+      realises a FULL source *tree* from a REAL GitHub tarball over genuine TLS
+      (`https_get_full_verified` + system CA) — `url_split` → verified-TLS fetch
+      → `inflate_gzip` → `extract_tar` → each member content-addressed into the
+      flat store + a `.tree.json` manifest. Unblocked 2026-08-25 by the
+      toolchain sync pulling in #191: the archive inflate is now O(N) (Vec<Int>
+      byte buffer + `flat_bytes`/`join_pieces`, not one-byte String.concat) and
+      the runtime bounds string-registry probe chains, so MB-scale tarballs
+      inflate+extract without the O(N²) stall / registry abort. Verified: fetch
+      `sharkdp/fd` master → inflate (MB-scale) → 59 file members realized,
+      deterministic pkgCA, repeat-stable. (Scale sanity: an underscore tarball
+      inflating to 7.8MB / 400 members also extracted cleanly in probing.)
 - [ ] **Realizer consumes a module-composed spec over real HTTPS**: `build-exec`
       uses the httpbin mirror; swap its fetch to `fetch_url` per-pkg so the whole
       compose→plan→execute pipeline runs over genuine TLS. (Filename collision
@@ -111,8 +127,16 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 - **Forward refs fail**: define a top-level fn before it's used.
 - **HTTPS**: `https_get_full_verified(host,port,path,"")` for real hosts
   (unverified variant can't resolve hostnames — issue #188).
-- **String registry** capped at 262144, cannot be raised — keep large-payload
-  demos small (issue #189).
+- **String registry / archive perf (since 2026-08-25 sync)**:
+  `inflate_gzip` is now O(N), not O(N²) one-byte concat, and the runtime bounds
+  string-registry probe chains via rehash-on-churn (#191 fixed). MB-scale real
+  tarballs now inflate+extract (verified 7.8MB / 400 members). Two ceilings
+  remain (both #189, not yet fixed): the registry table is still a fixed
+  `VYB_STR_REG_CAP` array (262144) that cannot be enlarged — pieces in
+  `flat_bytes` are 64B, so a single inflated buffer near ~16MB keeps ~N/64
+  pieces live and can approach that cap; and the per-byte `String::from_byte`/
+  concat flatten floor is ~100us/byte superlinear near ~1M, so keep committed
+  real-tree demos to a few-hundred-KB sources for fast runs.
 
 ## 6. Sources of truth
 
