@@ -23,7 +23,7 @@
 //
 // Vyb ranges are INCLUSIVE; iterate 0..len-1 and guard empties.
 import collections
-import http::{http_get_full}
+import http::{http_get_full, HttpResponse}
 import https::{https_get_full_verified}
 import url::{url_split, UrlSplit}
 import vybos::{content_hash}
@@ -37,21 +37,19 @@ share(all)
 struct UrlRealizeResult { realised<Int>, failed<Int>, order<String> }
 
 // Fetch a URL over the transport selected by its scheme. Absent on non-200 or
-// any fetch/TLS failure. `u` comes from url_split. Uses explicit if/else on the
-// scheme (the shared bodies are spliced into importers; nested optionals inside
-// `select` arms hit a codegen edge, so keep the arms flat).
+// any fetch/TLS failure. `u` comes from url_split. Each full client returns a
+// PRESENT HttpResponse (status -1 + `error` on failure — the current stdlib),
+// so we check r.status rather than matching an optional.
 share(all)
 fetch_url(u<UrlSplit>)<String?> -> {
     if (u.scheme == "https") {
-        match (https_get_full_verified(u.host, u.port, u.path, "")) {
-            resp -> { if (resp.status != 200) { return String?() } else { return String?(resp.body) } }
-            ? -> { return String?() }
-        }
+        r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+        if (r.status != 200) { return String?() }
+        return String?(r.body)
     } else if (u.scheme == "http") {
-        match (http_get_full(u.host, u.port, u.path)) {
-            resp -> { if (resp.status != 200) { return String?() } else { return String?(resp.body) } }
-            ? -> { return String?() }
-        }
+        r2<HttpResponse> = http_get_full(u.host, u.port, u.path)
+        if (r2.status != 200) { return String?() }
+        return String?(r2.body)
     } else {
         return String?()
     }

@@ -15,7 +15,7 @@
 //                      source string on each derivation.
 
 import collections
-import http
+import http::{http_get_full, HttpResponse}
 import io
 
 // A derivation: everything needed to obtain/build one thing.
@@ -145,24 +145,20 @@ materialize(bytes<String>, destPath<String>)<Bool> -> {
 share(all)
 fetch_derivation(name<String>, version<String>, host<String>, port<Int>,
                  req_path<String>, source_url<String>, storeDir<String>)<Package?> -> {
-    match (http_get_full(host, port, req_path)) {
-        resp -> {
-            if (resp.status != 200) {
-                return Package?()
-            }
-            bytes<String> = resp.body
-            h<Int> = content_hash(bytes, name, version)
-            sp<String> = "/vyb/store/" + h.to_string() + "-" + name + "-" + version
-            if (!materialize(bytes, storeDir + "/" + h.to_string() + "-" + name + "-" + version + ".src")) {
-                return Package?()
-            }
-            return Package?(Package {
-                name = name,
-                version = version,
-                source = source_url,
-                storePath = sp
-            })
-        }
-        ? -> { return Package?() }
+    r<HttpResponse> = http_get_full(host, port, req_path)
+    if (r.status != 200) {
+        return Package?()
     }
+    bytes<String> = r.body
+    h<Int> = content_hash(bytes, name, version)
+    sp<String> = "/vyb/store/" + h.to_string() + "-" + name + "-" + version
+    if (!materialize(bytes, storeDir + "/" + h.to_string() + "-" + name + "-" + version + ".src")) {
+        return Package?()
+    }
+    return Package?(Package {
+        name = name,
+        version = version,
+        source = source_url,
+        storePath = sp
+    })
 }

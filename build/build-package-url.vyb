@@ -22,7 +22,7 @@
 import url::{url_split}
 import archive::{inflate_gzip, extract_tar, TarEntry}
 import io::{open_read, read_all, close, open_write, write_str}
-import http::{http_get_full}
+import http::{http_get_full, HttpResponse}
 import collections
 
 // carrier for realize_once results
@@ -100,14 +100,12 @@ check(cond<Bool>, label<String>)<Int> -> {
 // non-200 / network failure).
 fetch_body(u2<UrlSplit>)<String?> -> {
     // scheme -> client. http:// for the deterministic local demo; https://
-    // would call https_get_full(u.host, u.port, u.path) — same shape.
-    match (http_get_full(u2.host, u2.port, u2.path)) {
-        resp -> {
-            if (resp.status != 200) { return String?() }
-            return String?(resp.body)
-        }
-        ? -> { return String?() }
-    }
+    // would call https_get_full(u.host, u.port, u.path) — same shape. The
+    // full client returns a PRESENT HttpResponse (status -1 + error on
+    // failure), so check r.status rather than matching an optional.
+    r<HttpResponse> = http_get_full(u2.host, u2.port, u2.path)
+    if (r.status != 200) { return String?() }
+    return String?(r.body)
 }
 
 // Realise an archive fetched from `url`: parse, fetch, inflate, extract, write

@@ -21,7 +21,7 @@
 // HTTPS/tar and URL parsing remain the later slice (doc/RFE-M2.md Items 3,4).
 
 import collections
-import http
+import http::{http_get_full, HttpResponse}
 import io
 import vybos::{content_hash}
 import plan::{Pkg, Dep, SystemSpec, RealRec,
@@ -150,29 +150,24 @@ main()<Int> -> {
             i<Int> = find_pkg(spec.pkgs, nm)
             pkg<Pkg> = spec.pkgs.get(i)
             real<Int> = real_of(recs, nm)
-            match (http_get_full(mirror_host(nm), 80, mirror_path(nm))) {
-                resp -> {
-                    if (resp.status != 200) {
-                        println("  FAILED  " + nm + " (non-200 " + resp.status.to_string() + ")")
-                        failed = failed + 1
-                    } else {
-                        bytes<String> = resp.body
-                        ch<Int> = content_hash(bytes, nm, pkg.version)
-                        deps<Vec<Dep>> = pkg.deps
-                        ij<String> = meta_inputs(spec.pkgs, recs, deps)
-                        if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
-                            println("  REALISED " + nm + "-" + pkg.version +
-                                    "  closure=" + real.to_string() +
-                                    "  contentHash=" + ch.to_string())
-                            realised = realised + 1
-                        } else {
-                            println("  FAILED  " + nm + " (write)");
-                            failed = failed + 1
-                        }
-                    }
+            r<HttpResponse> = http_get_full(mirror_host(nm), 80, mirror_path(nm))
+            if (r.status != 200) {
+                println("  FAILED  " + nm + " (non-200 " + r.status.to_string() + ")")
+                failed = failed + 1
+            } else {
+                bytes<String> = r.body
+                ch<Int> = content_hash(bytes, nm, pkg.version)
+                deps<Vec<Dep>> = pkg.deps
+                ij<String> = meta_inputs(spec.pkgs, recs, deps)
+                if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
+                    println("  REALISED " + nm + "-" + pkg.version +
+                            "  closure=" + real.to_string() +
+                            "  contentHash=" + ch.to_string())
+                    realised = realised + 1
+                } else {
+                    println("  FAILED  " + nm + " (write)");
+                    failed = failed + 1
                 }
-                ? -> { println("  FAILED  " + nm + " (http)");
-                       failed = failed + 1 }
             }
         }
     }

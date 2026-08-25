@@ -20,7 +20,7 @@
 //
 // NOTE: Vyb ranges are INCLUSIVE; iterate 0..len-1 and guard empties.
 import collections
-import http
+import http::{http_get_full, HttpResponse}
 import io
 import vybos::{content_hash}
 import plan::{Pkg, Dep, SystemSpec, RealRec,
@@ -152,23 +152,19 @@ realize_spec(storeDir<String>, spec<SystemSpec>)<RealizeResult> -> {
             i<Int> = find_pkg(pkgs, nm)
             pkg<Pkg> = pkgs.get(i)
             real<Int> = real_of(recs, nm)
-            match (http_get_full(mirror_host(nm), 80, mirror_path(nm))) {
-                resp -> {
-                    if (resp.status != 200) {
-                        failed = failed + 1
-                    } else {
-                        bytes<String> = resp.body
-                        ch<Int> = content_hash(bytes, nm, pkg.version)
-                        deps<Vec<Dep>> = pkg.deps
-                        ij<String> = meta_inputs(pkgs, recs, deps)
-                        if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
-                            realised = realised + 1
-                        } else {
-                            failed = failed + 1
-                        }
-                    }
+            r<HttpResponse> = http_get_full(mirror_host(nm), 80, mirror_path(nm))
+            if (r.status != 200) {
+                failed = failed + 1
+            } else {
+                bytes<String> = r.body
+                ch<Int> = content_hash(bytes, nm, pkg.version)
+                deps<Vec<Dep>> = pkg.deps
+                ij<String> = meta_inputs(pkgs, recs, deps)
+                if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
+                    realised = realised + 1
+                } else {
+                    failed = failed + 1
                 }
-                ? -> { failed = failed + 1 }
             }
         }
     }
