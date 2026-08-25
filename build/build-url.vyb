@@ -1,0 +1,70 @@
+// build-url.vyb — VybOS M2 slice: verify the pure-Vyb URL parser against the
+// doc/RFE-M2.md Item 4 acceptance vectors, and demonstrate scheme-aware
+// fetch wiring (parse URL -> pick http/https client + port + path).
+//
+// This is fully offline (no network needed) — it validates the parser, which
+// is the piece the package realizer needs to take a bare `url` String instead
+// of hardcoded (host, port, path) args.
+//
+// Acceptance (doc/RFE-M2.md Item 4):
+//   url_split("http://example.com/a/b")  -> (http, example.com, 80,  /a/b)
+//   url_split("https://example.com/x")   -> (https, example.com, 443, /x)
+
+import url::{url_split, default_port}
+import io
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// readable "<scheme> <host> <port> <path>" for a UrlSplit.
+describe(u<UrlSplit>)<String> -> {
+    return u.scheme + " " + u.host + " " + u.port.to_string() + " " + u.path
+}
+
+main()<Int> -> {
+    println("=== VybOS M2: URL parser (framework-side, offline) ===")
+    fails<Int> = 0
+
+    u1 = url_split("http://example.com/a/b")
+    fails = fails + check(u1.scheme == "http",     "scheme http")
+    fails = fails + check(u1.host == "example.com","host example.com")
+    fails = fails + check(u1.port == 80,           "default port 80 for http")
+    fails = fails + check(u1.path == "/a/b",       "path /a/b")
+
+    u2 = url_split("https://example.com/x")
+    fails = fails + check(u2.scheme == "https",    "scheme https")
+    fails = fails + check(u2.host == "example.com","host example.com")
+    fails = fails + check(u2.port == 443,          "default port 443 for https")
+    fails = fails + check(u2.path == "/x",         "path /x")
+
+    // explicit port overrides the default
+    u3 = url_split("https://example.com:8443/y")
+    fails = fails + check(u3.port == 8443,         "explicit port 8443 wins")
+    fails = fails + check(u3.path == "/y",         "path /y with explicit port")
+
+    // scheme casing normalises to lower
+    u4 = url_split("HTTP://Example.com/")
+    fails = fails + check(u4.scheme == "http",     "scheme lowercased")
+    fails = fails + check(u4.host == "Example.com","host keeps case")
+
+    // bare host defaults to http
+    u5 = url_split("example.com")
+    fails = fails + check(u5.scheme == "http",     "no scheme -> http")
+    fails = fails + check(u5.port == 80,           "no scheme -> port 80")
+
+    println("")
+    println("  parsed: " + describe(u1))
+    println("  parsed: " + describe(u2))
+    println("  parsed: " + describe(u3))
+    println("  parsed: " + describe(u4))
+    println("")
+
+    sum<String> = "ALL URL-PARSER ACCEPTANCE VECTORS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

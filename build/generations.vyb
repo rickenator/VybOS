@@ -1,0 +1,240 @@
+// build/generations.vyb — VybOS M2 step: generation store + rollback bookkeeping.
+//
+// This makes the "generations & rollback" concept REAL on disk (pure Vyb, no
+// network): each commit writes an immutable generation record + its closure's
+// reachable store-path set, append-only index ledger, and a `current` pointer.
+// Mirrors doc/ARCHITECTURE.md §7 (flat until the runtime gains mkdir, and the
+// current-pointer is a file rewrite — a true atomic symlink swap awaits the
+// `rename`/`symlink` RFE).
+//
+// Layout under generations/ (gitignored runtime state):
+//   index.json        ledger: line 1 `cur=<id>`, then one `id|parent|digest`
+//                     line per generation (append-only = immutable history)
+//   gen-<id>.spec.json    serialized SystemSpec (the generation's desired state)
+//   gen-<id>.paths.json   reachable set: the realized store paths of the closure
+//
+// Everything here is deterministic; there are no fetches. Invariant checks run
+// in-process and double as persistence verify (read the files back).
+
+import collections
+import io
+import plan::{Pkg, Dep, SystemSpec, RealRec, Generation, GenEntry,
+              resolve, resolve_issue, real_table, real_of, find_pkg,
+              spec_digest}
+
+// ---- derivation: fresh internal deps Vec (move-safe); storePath set like
+// proto-plan so serialization matches the proven-good shape ----
+deriv(name<String>, ver<String>, src<String>, depNames<Vec<String>>)<Pkg> -> {
+    deps<Vec<Dep>> = Vec()
+    m<Int> = depNames.len()
+    if (m > 0) {
+        for (k in 0..m-1) { deps.push(Dep { name = depNames.get(k), kind = "runtime" }) }
+    }
+    return Pkg { name = name, version = ver, source = src, deps = deps, storePath = "" }
+}
+
+// JSON array of the closure's reachable store paths (the GC-root set shape).
+// NOTE: builds LINEARLY with a leading-separator trick (no if-merge on a
+// Vec<Pkg>.get() result — that construct trips the current LLVM phi/verifier).
+reachable_json(spec<SystemSpec>)<String> -> {
+    recs<Vec<RealRec>> = real_table(spec.pkgs)
+    out<String> = "["
+    sep<String> = ""
+    pkgs<Vec<Pkg>> = spec.pkgs
+    n<Int> = pkgs.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            p<Pkg> = pkgs.get(i)
+            r<Int> = real_of(recs, p.name)
+            out = out + sep + "\"/vyb/store/" + r.to_string() + "-" + p.name + "-" + p.version + "\""
+            sep = ", "
+        }
+    }
+    out = out + "]"
+    return out
+}
+
+// write a whole file; returns success.
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+// read a whole file ("" on absence/failure).
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+// index.json ledger: line 1 `cur=<id>`, then one `id|parent|digest` per gen.
+index_text(cur<Int>, entries<Vec<GenEntry>>)<String> -> {
+    s<String> = "cur=" + cur.to_string() + "\n"
+    n<Int> = entries.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            e<GenEntry> = entries.get(i)
+            s = s + e.id.to_string() + "|" + e.parent.to_string() + "|" + e.digest.to_string() + "\n"
+        }
+    }
+    return s
+}
+
+// true iff `target` is on the parent-chain of `cur` (or == cur): a valid
+// rollback destination. Generation 0 is the void (no root) — never valid.
+is_ancestor(entries<Vec<GenEntry>>, cur<Int>, target<Int>)<Bool> -> {
+    if (target == 0) { return false }
+    if (target == cur) { return true }
+    x<Int> = cur
+    n<Int> = entries.len()
+    guard<Int> = 0
+    while (x != 0 && x != target && guard < 1000) {
+        found<Bool> = false
+        if (n > 0) {
+            for (i in 0..n-1) {
+                if (entries.get(i).id == x) { x = entries.get(i).parent; found = true; break }
+            }
+        }
+        if (!found) { return false }
+        guard = guard + 1
+    }
+    return (x == target)
+}
+
+// commit one generation: write spec.json + paths.json, return the row.
+commit_row(gdir<String>, gid<Int>, parent<Int>, spec<SystemSpec>)<GenEntry> -> {
+    digest<Int> = spec_digest(spec)
+    write_flat(gdir + "/gen-" + gid.to_string() + ".spec.json", spec.to_string())
+    write_flat(gdir + "/gen-" + gid.to_string() + ".paths.json", reachable_json(spec))
+    return GenEntry { id = gid, parent = parent, digest = digest }
+}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { print("  FAIL " + label + "\n"); return 1 }
+    print("  ok   " + label + "\n")
+    return 0
+}
+
+// --- tiny local string helpers (module String exposes no index-of/count) ---
+// count of `nd` occurrences in `h`.
+substr_count(h<String>, nd<String>)<Int> -> {
+    c<Int> = 0
+    hl<Int> = h.len(); nl<Int> = nd.len()
+    if (nl > 0 && nl <= hl) {
+        for (i in 0..hl-nl) {
+            ok<Bool> = true
+            for (j in 0..nl-1) { if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break } }
+            if (ok) { c = c + 1 }
+        }
+    }
+    return c
+}
+
+// index of first occurrence of `nd` in `h`, or -1.
+substr_index(h<String>, nd<String>)<Int> -> {
+    hl<Int> = h.len(); nl<Int> = nd.len()
+    if (nl > hl) { return -1 }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) { if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break } }
+        if (ok) { return i }
+    }
+    return -1
+}
+
+main()<Int> -> {
+    gdir<String> = "generations"
+    println("=== VybOS M2: generation store + rollback bookkeeping (pure Vyb) ===")
+    println("step: configs...\n")
+
+    // Configs: gen1 = gzip 1.0, gen2 = gzip 2.0 (+openssl), gen3 = zlib 1.4 bump.
+    needZlib<Vec<String>> = Vec(); needZlib.push("zlib")
+    noDeps<Vec<String>> = Vec()
+
+    s1<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    s1.pkgs.push(deriv("gzip", "1.0", "gz1.tar.gz", needZlib))
+    s1.pkgs.push(deriv("zlib", "1.3", "z.tar.gz", noDeps))
+    s1.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", needZlib))
+    println("step: s1 built\n")
+
+    s2<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    s2.pkgs.push(deriv("gzip", "2.0", "gz2.tar.gz", needZlib))
+    s2.pkgs.push(deriv("zlib", "1.3", "z.tar.gz", noDeps))
+    s2.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", needZlib))
+    println("step: s2 built\n")
+
+    s3<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    s3.pkgs.push(deriv("gzip", "2.0", "gz2.tar.gz", needZlib))
+    s3.pkgs.push(deriv("zlib", "1.4", "z.tar.gz", noDeps))
+    s3.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", needZlib))
+    println("step: s3 built\n")
+
+    fails<Int> = 0
+    fails = fails + check(spec_digest(s1) > 0, "config gen1 digest")
+    fails = fails + check(spec_digest(s2) > 0, "config gen2 digest")
+    fails = fails + check(spec_digest(s3) > 0, "config gen3 digest")
+    println("step: validated\n")
+
+    // commit three generations (append-only ledger, current parked on 3)
+    entries<Vec<GenEntry>> = Vec()
+    entries.push(commit_row(gdir, 1, 0, s1))
+    println("step: gen1 committed\n")
+    entries.push(commit_row(gdir, 2, 1, s2))
+    println("step: gen2 committed\n")
+    entries.push(commit_row(gdir, 3, 2, s3))
+    println("step: gen3 committed\n")
+    cur<Int> = 3
+    write_flat(gdir + "/index.json", index_text(cur, entries))
+    println("step: index written\n")
+
+    print("== ledger (index.json) ==\n")
+    print(read_flat(gdir + "/index.json"))
+    print("== gen-1 reachable paths ==\n")
+    print(read_flat(gdir + "/gen-1.paths.json") + "\n")
+
+    // ---- structure / chain invariants ----
+    e1<GenEntry> = entries.get(0)
+    e2<GenEntry> = entries.get(1)
+    e3<GenEntry> = entries.get(2)
+    fails = fails + check(e1.parent == 0, "gen1 is the root generation")
+    fails = fails + check(e2.parent == 1 && e3.parent == 2, "chain: gen1 <- gen2 <- gen3 (rollback targets)")
+    fails = fails + check(e3.digest != e2.digest && e2.digest != e1.digest, "each generation has a distinct content digest")
+
+    // ---- determinism: rebuilding a copy of s3 gives the same digest ----
+    s3b<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    s3b.pkgs.push(deriv("gzip", "2.0", "gz2.tar.gz", needZlib))
+    s3b.pkgs.push(deriv("zlib", "1.4", "z.tar.gz", noDeps))
+    s3b.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", needZlib))
+    fails = fails + check(spec_digest(s3b) == e3.digest, "same state -> same generation digest (determinism)")
+
+    // ---- rollback selection (ancestor check) ----
+    fails = fails + check(is_ancestor(entries, 3, 2), "rollback gen3 -> gen2 valid (parent)")
+    fails = fails + check(is_ancestor(entries, 3, 1), "rollback gen3 -> gen1 valid (grandparent)")
+    fails = fails + check(is_ancestor(entries, 3, 3), "re-apply current gen3 valid (no-op)")
+    fails = fails + check(!is_ancestor(entries, 2, 3), "rollback to a DESCENDANT is rejected")
+    fails = fails + check(!is_ancestor(entries, 3, 0), "rollback to the void (gen 0) is rejected")
+
+    // ---- persistence: files written & readable back ----
+    indexTxt<String> = read_flat(gdir + "/index.json")
+    fails = fails + check(substr_count(indexTxt, "\n") == 4, "index has current + 3 generation rows")
+    fails = fails + check(substr_index(indexTxt, "cur=3") == 0, "current pointer persists (cur=3, row 1)")
+    jb<String> = read_flat(gdir + "/gen-2.spec.json")
+    fails = fails + check(substr_index(jb, "\"name\": \"openssl\"") >= 0, "gen-2 spec.json round-trips the SystemSpec")
+    pj<String> = read_flat(gdir + "/gen-3.paths.json")
+    fails = fails + check(substr_index(pj, "\"/vyb/store/") >= 0, "gen-3 reachable set written")
+
+    sumline<String> = ""
+    if (fails == 0) { sumline = "ALL GENERATION INVARIANTS PASS" } else { sumline = fails.to_string() + " FAILURE(S)" }
+    print("\n" + sumline + "\n")
+    if (fails == 0) { return 0 }
+    return 1
+}
+
+

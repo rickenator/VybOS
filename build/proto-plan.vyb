@@ -1,7 +1,9 @@
 import collections
 import plan::{Dep, Pkg, Service, SystemSpec, RealRec, Generation,
               find_pkg, order_count, token_kth, token_has, dep_key,
-              realize_hash, leaf_key, kinds_valid, parent_id}
+              realize_hash, leaf_key, kinds_valid, parent_id,
+              resolve, resolve_issue, real_of, real_table, spec_digest,
+              plan_lines, tokidx, substr_has}
 
 // ---- derivation: build a Pkg with a FRESH internal deps Vec (move-safe) ----
 deriv(name<String>, ver<String>, src<String>, depNames<Vec<String>>)<Pkg> -> {
@@ -13,163 +15,6 @@ deriv(name<String>, ver<String>, src<String>, depNames<Vec<String>>)<Pkg> -> {
     h<Int> = realize_hash(name, ver, src, dep_key(deps))
     return Pkg { name = name, version = ver, source = src, deps = deps,
                  storePath = "/vyb/store/" + h.to_string() + "-" + name + "-" + ver }
-}
-
-// ---- resolve: dependency-first topological order, for-over-passes (stable) ----
-resolve(g<Vec<Pkg>>)<String> -> {
-    n<Int> = g.len()
-    if (n == 0) { return "" }
-    ps<String> = ""
-    order<String> = ""
-    for (pp in 0..n-1) {
-        chosen<Int> = -1
-        for (i in 0..n-1) {
-            if (token_has(ps, g.get(i).name)) { continue }
-            dblock<Bool> = false
-            dm<Int> = g.get(i).deps.len()
-            if (dm > 0) {
-                for (k in 0..dm-1) {
-                    if (!token_has(ps, g.get(i).deps.get(k).name)) { dblock = true; break }
-                }
-            }
-            if (!dblock) { chosen = i; break }
-        }
-        if (chosen < 0) { return "cycle" }
-        if (ps.len() > 0) { ps = ps + "," }
-        ps = ps + g.get(chosen).name
-        if (order.len() > 0) { order = order + "," }
-        order = order + g.get(chosen).name
-    }
-    return order
-}
-
-// ---- validation: unknown dep or cycle -> non-empty message ----
-resolve_issue(g<Vec<Pkg>>)<String> -> {
-    n<Int> = g.len()
-    if (n > 0) {
-        for (i in 0..n-1) {
-            dm<Int> = g.get(i).deps.len()
-            if (dm > 0) {
-                for (k in 0..dm-1) {
-                    if (find_pkg(g, g.get(i).deps.get(k).name) < 0) {
-                        return "unknown dep: " + g.get(i).deps.get(k).name + " (wanted by " + g.get(i).name + ")"
-                    }
-                }
-            }
-        }
-    }
-    if (resolve(g) == "cycle") { return "dependency cycle detected" }
-    return ""
-}
-
-// ---- realization record lookup ----
-real_of(recs<Vec<RealRec>>, name<String>)<Int> -> {
-    n<Int> = recs.len()
-    if (n > 0) {
-        for (i in 0..n-1) { if (recs.get(i).name == name) { return recs.get(i).real } }
-    }
-    return 0
-}
-
-// ---- closure-aware realization table (deps-first, includes dep reals) ----
-real_table(g<Vec<Pkg>>)<Vec<RealRec>> -> {
-    order<String> = resolve(g)
-    occ<Int> = order_count(order)
-    recs<Vec<RealRec>> = Vec()
-    if (occ > 0) {
-        for (k in 0..occ-1) {
-            nm<String> = token_kth(order, k)
-            i<Int> = find_pkg(g, nm)
-            deps<Vec<Dep>> = g.get(i).deps
-            ds<String> = ""
-            dm<Int> = deps.len()
-            if (dm > 0) {
-                for (q in 0..dm-1) {
-                    dk<Dep> = deps.get(q)
-                    pr<Int> = 0
-                    if (find_pkg(g, dk.name) >= 0) { pr = real_of(recs, dk.name) }
-                    ds = ds + dk.name + "=" + pr.to_string() + ";"
-                }
-            }
-            preal<Int> = realize_hash(g.get(i).name, g.get(i).version, g.get(i).source, dep_key(deps) + "|" + ds)
-            recs.push(RealRec { name = g.get(i).name, real = preal })
-        }
-    }
-    return recs
-}
-
-// ---- whole-system closure-sensitive digest (generation identity) ----
-spec_digest(spec<SystemSpec>)<Int> -> {
-    recs<Vec<RealRec>> = real_table(spec.pkgs)
-    n<Int> = recs.len()
-    acc<Int> = 2166136261
-    if (n > 0) {
-        for (i in 0..n-1) { acc = (acc * 16777619) ^ recs.get(i).real }
-    }
-    return acc
-}
-
-// ---- transition plan as text lines (closure-aware; empty cur = fresh) ----
-plan_lines(cur<SystemSpec>, des<SystemSpec>)<String> -> {
-    out<String> = ""
-    desG<Vec<Pkg>> = des.pkgs
-    curG<Vec<Pkg>> = cur.pkgs
-    nc<Int> = curG.len()
-    if (nc == 0) {
-        nd<Int> = desG.len()
-        if (nd > 0) {
-            for (i in 0..nd-1) { out = out + "install " + desG.get(i).name + "\n" }
-        }
-    } else {
-        bcur<Vec<RealRec>> = real_table(curG)
-        bdes<Vec<RealRec>> = real_table(desG)
-        nd<Int> = desG.len()
-        if (nd > 0) {
-            for (i in 0..nd-1) {
-                dj<Int> = find_pkg(curG, desG.get(i).name)
-                if (dj < 0) {
-                    out = out + "install " + desG.get(i).name + "\n"
-                } else {
-                    if (real_of(bcur, desG.get(i).name) != real_of(bdes, desG.get(i).name)) {
-                        out = out + "rebuild " + desG.get(i).name + "\n"
-                    } else {
-                        out = out + "keep " + desG.get(i).name + "\n"
-                    }
-                }
-            }
-        }
-        nc2<Int> = curG.len()
-        if (nc2 > 0) {
-            for (i in 0..nc2-1) {
-                if (find_pkg(desG, curG.get(i).name) < 0) { out = out + "remove " + curG.get(i).name + "\n" }
-            }
-        }
-    }
-    return out
-}
-
-// token index for order-checking, or -1.
-tokidx(ord<String>, name<String>)<Int> -> {
-    c<Int> = order_count(ord)
-    if (c > 0) {
-        for (i in 0..c-1) { if (token_kth(ord, i) == name) { return i } }
-    }
-    return -1
-}
-
-// naive substring test (module String has no visible .n on this build).
-substr_has(h<String>, nd<String>)<Bool> -> {
-    hl<Int> = h.len()
-    nl<Int> = nd.len()
-    if (nl > hl) { return false }
-    for (i in 0..hl-nl) {
-        ok<Bool> = true
-        for (j in 0..nl-1) {
-            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
-        }
-        if (ok) { return true }
-    }
-    return false
 }
 
 check(cond<Bool>, label<String>)<Int> -> {
@@ -287,4 +132,3 @@ main()<Int> -> {
     if (fails == 0) { return 0 }
     return 1
 }
-

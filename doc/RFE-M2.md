@@ -120,6 +120,25 @@ Build a gzipped tar of 2–3 text files in `/tmp` with `tar czf`, fetch + extrac
 it with the new code, and assert each member is byte-identical to the source.
 JIT-compilable; `test/modules/` test; existing suite untouched.
 
+### Testing HTTPS access + builds against GitHub
+For exercising the **real-network** path (fetching a file over HTTPS, and
+building/extracting it), GitHub is a convenient, always-up test surface — no
+self-hosted server or certificate setup needed:
+- **Raw files**: `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
+  serves a single file over TLS; e.g.
+  `https://raw.githubusercontent.com/rickenator/VybOS/main/README.md`. Use this
+  to verify a single `https_get_full`-style fetch + utf8-to-string round-trip.
+- **Release archives**: `https://github.com/<owner>/<repo>/archive/<ref>.tar.gz`
+  (or `.zip`) serves a real tarball to feed the inflate + ustar-extract path;
+  e.g. `https://github.com/rickenator/VybOS/archive/main.tar.gz`. This is the
+  end-to-end fetch→inflate→extract→store case with a genuine remote TLS peer.
+- A handy all-in-one target that always exists: the Vyb compiler repo itself at
+  `https://github.com/rickenator/Vyb/archive/refs/heads/main.tar.gz` (retries
+  gracefully; a pinned release tag is even more reproducible).
+- Caveat: raw.githubusercontent.com may return a redirect (HTTP 3xx) — ensure
+  the client follows it or that the acceptance test tolerates the final URL,
+  so a flaky remote peer doesn't fail an otherwise-correct implementation.
+
 ---
 
 ## Item 4 — URL parser in stdlib (P1)

@@ -1,0 +1,104 @@
+// build-apply.vyb — VybOS vertical slice: compose -> validate -> digest ->
+// transition plan (the `vyb system apply` DRY-RUN, offline).
+//
+// Ties the module-composition convention (modules/compose.vyb) to the graph /
+// transition framework (modules/plan.vyb): a machine is assembled by folding
+// modules into a SystemSpec, gated by compose_issue, and switching it is a
+// pure, deterministic plan_lines() diff (install/rebuild/keep/remove) keyed by
+// closure-aware store identities — the same plan a realizer would execute.
+//
+// This is the plan for applying `des` on top of `cur`; no side effects
+// (no fetch, no write). Mirrors build-url.vyb / build-compose.vyb style with a
+// check()/exit-code contract.
+import collections
+import compose::{Module, blank_system, compose, compose_issue, mk_pkg,
+                 with_pkg, with_service, mk_service, empty_module}
+import plan::{SystemSpec, Pkg, Service, spec_digest, plan_lines}
+import sshd::{sshd}
+import getty::{getty}
+import vim::{vim}
+import nginx::{nginx}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// naive substring test (module String has no visible .n on this build).
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+// assemble a SystemSpec from an arbitrary enabled/disabled module set.
+assemble(sshdOn<Bool>, gettyOn<Bool>, vimOn<Bool>, nginxOn<Bool>, host<String>)<SystemSpec> -> {
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(sshdOn))
+    mods.push(getty(gettyOn))
+    mods.push(vim(vimOn))
+    mods.push(nginx(nginxOn))
+    return compose(blank_system("x86_64-linux", host), mods)
+}
+
+main()<Int> -> {
+    println("=== VybOS: module-composed apply dry-run (compose -> validate -> plan) ===")
+    fails<Int> = 0
+
+    // cur: sshd + getty + vim   |   des: same + nginx  (an install transition)
+    cur<SystemSpec> = assemble(true, true, true, false, "h1")
+    des<SystemSpec> = assemble(true, true, true, true,  "h1")
+
+    // 1. both composed systems validate clean.
+    fails = fails + check(compose_issue(cur) == "", "cur spec is clean")
+    fails = fails + check(compose_issue(des) == "", "des spec is clean")
+
+    // 2. generation digests differ when a module adds a package.
+    dcur<Int> = spec_digest(cur)
+    ddes<Int> = spec_digest(des)
+    fails = fails + check(dcur != ddes, "adding nginx changes the system digest")
+
+    // 3. plan is incremental: nginx installs, openssh + vim are kept.
+    plan<String> = plan_lines(cur, des)
+    fails = fails + check(substr_has(plan, "install nginx\n"),   "plan installs nginx")
+    fails = fails + check(substr_has(plan, "keep openssh\n"),    "plan keeps openssh")
+    fails = fails + check(substr_has(plan, "keep vim\n"),        "plan keeps vim")
+
+    // 4. determinism: identical inputs -> identical plan + digest.
+    cur2<SystemSpec> = assemble(true, true, true, false, "h1")
+    fails = fails + check(spec_digest(cur2) == dcur,         "digest is deterministic")
+    fails = fails + check(plan_lines(cur2, des) == plan,     "plan is deterministic")
+
+    // 5. removing a module produces an explicit `remove` in the plan.
+    back<SystemSpec> = assemble(true, true, true, false, "h1")   // nginx off again
+    backPlan<String> = plan_lines(des, back)
+    fails = fails + check(substr_has(backPlan, "remove nginx\n"), "plan removes nginx")
+
+    // 6. service-only module turns off without a pkg to remove (getty adds no
+    //    package, so its plan delta is empty of removes).
+    noGettyPlan<String> = plan_lines(cur, assemble(true, false, true, false, "h1"))
+    fails = fails + check(!substr_has(noGettyPlan, "remove\n"),   "service-only off -> nothing to remove")
+
+    println("")
+    println("--- transition plan (cur -> des: add nginx) ---")
+    println(plan)
+
+    println("")
+    println("digest cur=" + dcur.to_string() + "  des=" + ddes.to_string())
+    println("")
+
+    sum<String> = "ALL APPLY-DRY-RUN INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

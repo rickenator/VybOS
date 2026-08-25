@@ -1,0 +1,15 @@
+// vim.vyb — VybOS example module: a package-only contribution (no service).
+//
+// Demonstrates a module that adds a package but never enables a service —
+// showing a module need not touch both fields of the contribution.
+import collections
+import compose::{Module, empty_module, mk_pkg, with_pkg}
+
+share(all)
+vim(enabled<Bool>)<Module> -> {
+    m<Module> = empty_module()
+    if (enabled) {
+        m = with_pkg(m, mk_pkg("vim", "9.1", "https://github.com/vim/vim/archive/v9.1.tar.gz", Vec()))
+    }
+    return m
+}

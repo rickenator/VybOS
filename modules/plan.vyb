@@ -1,10 +1,12 @@
-// plan.vyb — VybOS panel types + trivial leaf helpers.
+// plan.vyb — VybOS panel types + the pure graph framework.
 //
-// SCOPE: this module holds the shared *types* plus small, pure, spliceable
-// helpers (find_pkg, token scanners, dep_key, realize_hash). The graph
-// algorithms (resolve / real_table / plan_lines) live in the entry program
-// build/proto-plan.vyb as ordinary top-level functions — keep the module
-// to types + leaf logic so it stays importable and trivial to audit.
+// SCOPE: this module is the framework's *pure* core: shared types plus the
+// resolvers/planners every VybOS program needs. The graph algorithms
+// (resolve / real_table / spec_digest / plan_lines) were promoted out of the
+// prototype entry (build/proto-plan.vyb) so both the invariant test and the
+// closure realizer (build/build-closure.vyb) share ONE audited implementation
+// instead of re-copying it. Everything here is pure (no io, no http) and
+// `share(all)` so any entry can import it.
 // NOTE: Vyb ranges are INCLUSIVE of the upper bound; iterate vectors with
 // 0..len-1 and guard empties, or you read one-past-the-buffer (double-free).
 import collections
@@ -21,6 +23,13 @@ share(all)
 struct RealRec { name<String>, real<Int> }
 share(all)
 struct Generation { id<Int>, parent<Int?>, hash<Int> }
+
+// One row of the append-only generation ledger (index.json): id, parent id
+// (0 for the root generation), and that generation's whole-system content
+// digest (spec_digest). This is the persistent form of `Generation` — a flat
+// record the realizer can write/read without optional fields.
+share(all)
+struct GenEntry { id<Int>, parent<Int>, digest<Int> }
 
 // index of first pkg named `name`, or -1.
 share(all)
@@ -146,3 +155,181 @@ kinds_valid(pkgs<Vec<Pkg>>)<Bool> -> {
 // rollback selection helper: parent generation id as a plain Int (0 if none).
 share(all)
 parent_id(gen<Generation>)<Int> -> { return gen.parent else 0 }
+
+// ==== graph framework (pure, promoted from build/proto-plan.vyb) ====
+
+// dependency-first topological order over names ("" if empty; "cycle" on a
+// cycle). Stable selection: pick first not-yet-placed pkg whose deps are all
+// placed, repeatedly.
+share(all)
+resolve(g<Vec<Pkg>>)<String> -> {
+    n<Int> = g.len()
+    if (n == 0) { return "" }
+    ps<String> = ""
+    order<String> = ""
+    for (pp in 0..n-1) {
+        chosen<Int> = -1
+        for (i in 0..n-1) {
+            if (token_has(ps, g.get(i).name)) { continue }
+            dblock<Bool> = false
+            dm<Int> = g.get(i).deps.len()
+            if (dm > 0) {
+                for (k in 0..dm-1) {
+                    if (!token_has(ps, g.get(i).deps.get(k).name)) { dblock = true; break }
+                }
+            }
+            if (!dblock) { chosen = i; break }
+        }
+        if (chosen < 0) { return "cycle" }
+        if (ps.len() > 0) { ps = ps + "," }
+        ps = ps + g.get(chosen).name
+        if (order.len() > 0) { order = order + "," }
+        order = order + g.get(chosen).name
+    }
+    return order
+}
+
+// non-empty message if an unknown dep or a cycle exists ("" = clean). This is
+// the validation gate a realizer/activator runs BEFORE any side effect.
+share(all)
+resolve_issue(g<Vec<Pkg>>)<String> -> {
+    n<Int> = g.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            dm<Int> = g.get(i).deps.len()
+            if (dm > 0) {
+                for (k in 0..dm-1) {
+                    if (find_pkg(g, g.get(i).deps.get(k).name) < 0) {
+                        return "unknown dep: " + g.get(i).deps.get(k).name + " (wanted by " + g.get(i).name + ")"
+                    }
+                }
+            }
+        }
+    }
+    if (resolve(g) == "cycle") { return "dependency cycle detected" }
+    return ""
+}
+
+// realized hash of a named pkg in a rec table (0 if absent).
+share(all)
+real_of(recs<Vec<RealRec>>, name<String>)<Int> -> {
+    n<Int> = recs.len()
+    if (n > 0) {
+        for (i in 0..n-1) { if (recs.get(i).name == name) { return recs.get(i).real } }
+    }
+    return 0
+}
+
+// closure-aware realization table: one RealRec per pkg, in dependency order,
+// where each pkg's `real` folds in its dependencies' reals (so a transitive
+// change bumps exactly this closure's real). Store identity is therefore a
+// pure function of (name, version, source, dep-closure).
+share(all)
+real_table(g<Vec<Pkg>>)<Vec<RealRec>> -> {
+    order<String> = resolve(g)
+    occ<Int> = order_count(order)
+    recs<Vec<RealRec>> = Vec()
+    if (occ > 0) {
+        for (k in 0..occ-1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(g, nm)
+            deps<Vec<Dep>> = g.get(i).deps
+            ds<String> = ""
+            dm<Int> = deps.len()
+            if (dm > 0) {
+                for (q in 0..dm-1) {
+                    dk<Dep> = deps.get(q)
+                    pr<Int> = 0
+                    if (find_pkg(g, dk.name) >= 0) { pr = real_of(recs, dk.name) }
+                    ds = ds + dk.name + "=" + pr.to_string() + ";"
+                }
+            }
+            preal<Int> = realize_hash(g.get(i).name, g.get(i).version, g.get(i).source, dep_key(deps) + "|" + ds)
+            recs.push(RealRec { name = g.get(i).name, real = preal })
+        }
+    }
+    return recs
+}
+
+// whole-system digest (generation identity): fold every closure-aware real.
+// Normalized to non-negative (like realize_hash) so a generation's digest is
+// a stable, positive store-style identity, not a signed FNV fold.
+share(all)
+spec_digest(spec<SystemSpec>)<Int> -> {
+    recs<Vec<RealRec>> = real_table(spec.pkgs)
+    n<Int> = recs.len()
+    acc<Int> = 2166136261
+    if (n > 0) {
+        for (i in 0..n-1) { acc = (acc * 16777619) ^ recs.get(i).real }
+    }
+    if (acc < 0) { acc = -acc }
+    return acc
+}
+
+// incremental transition plan as text lines ("install/rebuild/keep/remove").
+// empty `cur` = fresh install of everything in `des`. Closure-aware via
+// real_table (deps-first), so a transitive change shows up as a rebuild.
+share(all)
+plan_lines(cur<SystemSpec>, des<SystemSpec>)<String> -> {
+    out<String> = ""
+    desG<Vec<Pkg>> = des.pkgs
+    curG<Vec<Pkg>> = cur.pkgs
+    nc<Int> = curG.len()
+    if (nc == 0) {
+        nd<Int> = desG.len()
+        if (nd > 0) {
+            for (i in 0..nd-1) { out = out + "install " + desG.get(i).name + "\n" }
+        }
+    } else {
+        bcur<Vec<RealRec>> = real_table(curG)
+        bdes<Vec<RealRec>> = real_table(desG)
+        nd<Int> = desG.len()
+        if (nd > 0) {
+            for (i in 0..nd-1) {
+                dj<Int> = find_pkg(curG, desG.get(i).name)
+                if (dj < 0) {
+                    out = out + "install " + desG.get(i).name + "\n"
+                } else {
+                    if (real_of(bcur, desG.get(i).name) != real_of(bdes, desG.get(i).name)) {
+                        out = out + "rebuild " + desG.get(i).name + "\n"
+                    } else {
+                        out = out + "keep " + desG.get(i).name + "\n"
+                    }
+                }
+            }
+        }
+        nc2<Int> = curG.len()
+        if (nc2 > 0) {
+            for (i in 0..nc2-1) {
+                if (find_pkg(desG, curG.get(i).name) < 0) { out = out + "remove " + curG.get(i).name + "\n" }
+            }
+        }
+    }
+    return out
+}
+
+// index of `name` in a comma-separated order string, or -1.
+share(all)
+tokidx(ord<String>, name<String>)<Int> -> {
+    c<Int> = order_count(ord)
+    if (c > 0) {
+        for (i in 0..c-1) { if (token_kth(ord, i) == name) { return i } }
+    }
+    return -1
+}
+
+// naive substring test (module String has no visible .n on this build).
+share(all)
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}

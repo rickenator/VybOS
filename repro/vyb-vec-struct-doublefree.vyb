@@ -1,0 +1,109 @@
+// repro/vyb-vec-struct-doublefree.vyb
+// ---------------------------------------------------------------------------
+// MINIMAL REPRO of a heap corruption regression in build/vyb (2026-08-24).
+// Run:  VYB_STDLIB=.../stdlib  build/vyb repro/vyb-vec-struct-doublefree.vyb
+//
+// Every VybOS graph program (modules/plan.vyb: resolve / resolve_issue /
+// real_table) now aborts with "free(): double free detected in tcache 2"
+// (exit 134) when it walks a Vec whose element is a struct that owns a
+// nested Vec — even with NO dependencies, and even when find_pkg (same
+// element reads) succeeds just before. This file mirrors the exact access
+// pattern in plan.vyb without importing any VybOS module.
+// ---------------------------------------------------------------------------
+
+struct Dep { name<String>, kind<String> }
+struct Pkg { name<String>, version<String>, source<String>, deps<Vec<Dep>>, storePath<String> }
+
+// index of first pkg named `name`, or -1  (mirrors plan.vyb:find_pkg)
+find_pkg(g<Vec<Pkg>>, name<String>)<Int> -> {
+    n<Int> = g.len()
+    if (n > 0) {
+        for (i in 0..n-1) { if (g.get(i).name == name) { return i } }
+    }
+    return -1
+}
+
+// count of comma-separated tokens (mirrors plan.vyb:order_count)
+order_count(ord<String>)<Int> -> {
+    if (ord.len() == 0) { return 0 }
+    c<Int> = 1
+    l<Int> = ord.len()
+    for (i in 0..l-1) { if (ord.char_at(i) == 44) { c = c + 1 } }
+    return c
+}
+
+// k-th comma token (mirrors plan.vyb:token_kth)
+token_kth(ord<String>, k<Int>)<String> -> {
+    cur<String> = ""
+    tidx<Int> = 0
+    l<Int> = ord.len()
+    if (l > 0) {
+        for (i in 0..l-1) {
+            ci<Int> = ord.char_at(i)
+            if (ci == 44) {
+                if (tidx == k) { return cur }
+                tidx = tidx + 1
+                cur = ""
+            } else {
+                cur = cur + String::from_byte(ci & 255)
+            }
+        }
+    }
+    return cur
+}
+
+// true iff `name` is one of the comma tokens (mirrors plan.vyb:token_has)
+token_has(ord<String>, name<String>)<Bool> -> {
+    c<Int> = order_count(ord)
+    if (c > 0) {
+        for (i in 0..c-1) { if (token_kth(ord, i) == name) { return true } }
+    }
+    return false
+}
+
+// dependency-first topological order (mirrors plan.vyb:resolve)
+resolve(g<Vec<Pkg>>)<String> -> {
+    n<Int> = g.len()
+    if (n == 0) { return "" }
+    ps<String> = ""
+    order<String> = ""
+    for (pp in 0..n-1) {
+        chosen<Int> = -1
+        for (i in 0..n-1) {
+            if (token_has(ps, g.get(i).name)) { continue }
+            dblock<Bool> = false
+            dm<Int> = g.get(i).deps.len()
+            if (dm > 0) {
+                for (k in 0..dm-1) {
+                    if (!token_has(ps, g.get(i).deps.get(k).name)) { dblock = true; break }
+                }
+            }
+            if (!dblock) { chosen = i; break }
+        }
+        if (chosen < 0) { return "cycle" }
+        if (ps.len() > 0) { ps = ps + "," }
+        ps = ps + g.get(chosen).name
+        if (order.len() > 0) { order = order + "," }
+        order = order + g.get(chosen).name
+    }
+    return order
+}
+
+main()<Int> -> {
+    println("=== vyb vec-struct doublefree repro ===")
+    noDeps<Vec<Dep>> = Vec()
+    g<Vec<Pkg>> = Vec()
+    g.push(Pkg { name = "zlib", version = "1.3", source = "z.tar.gz", deps = noDeps, storePath = "" })
+    g.push(Pkg { name = "gzip", version = "2.0", source = "gz.tar.gz", deps = noDeps, storePath = "" })
+    println("made 2 no-dep pkgs, len=" + g.len().to_string())
+
+    println("step 1: find_pkg (single element reads) ...")
+    fi<Int> = find_pkg(g, "gzip")
+    println("  find_pkg idx=" + fi.to_string() + " (succeeds)")
+
+    println("step 2: resolve (loop walks g.get(i).<field> ...)")
+    o<String> = resolve(g)
+    println("  resolve order='" + o + "'")
+    println("REPRO: NO CRASH (clean)")
+    return 0
+}

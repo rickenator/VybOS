@@ -1,0 +1,93 @@
+// realize-url.vyb — VybOS URL-driven realization (scheme -> client -> fetch).
+//
+// SCOPE: the same realization loop as modules/realize.vyb, but the source
+// bytes come from EACH package's OWN `source` URL instead of a deterministic
+// name-keyed mirror. The URL is parsed by url_split (modules/url.vyb) and the
+// http vs https client is selected by scheme, so a package's source string —
+// e.g. "https://host/path" or "http://host/path" — fully drives the fetch
+// with no hardcoded (host, port, path) at the call site.
+//
+//   http  -> http_get_full(host, port, path)            (plaintext)
+//   https -> https_get_full_verified(host, port, path, "")  (TLS, system CA)
+//
+// This closes the RFE-M2 Item 4 framework side for REAL sources: a
+// module-composed spec carrying real HTTPS URLs is realised by actually
+// fetching over TLS (verified against the system CA bundle) rather than the
+// deterministic httpbin mirror used by build-exec. Store identity is still
+// closure-aware and content-addressed (realize_hash + content_hash over the
+// real fetched bytes), so results are reproducible when the source is stable.
+//
+// NOTE: keep the demo source SMALL — a large inflating tarball can exhaust the
+// runtime's fixed string-reference registry (VYB_STR_REG_CAP) during extract,
+// which is a toolchain limit, not a framework bug. Single small files are fine.
+//
+// Vyb ranges are INCLUSIVE; iterate 0..len-1 and guard empties.
+import collections
+import http::{http_get_full, HttpResponse}
+import https::{https_get_full_verified}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+import plan::{Pkg, Dep, SystemSpec, RealRec,
+              resolve, real_table, real_of, find_pkg,
+              order_count, token_kth}
+import realize::{realize_one, meta_inputs, version_of}
+
+// Result carrier for a realize_spec_url() pass.
+share(all)
+struct UrlRealizeResult { realised<Int>, failed<Int>, order<String> }
+
+// Fetch a URL over the transport selected by its scheme. Absent on non-200 or
+// any fetch/TLS failure. `u` comes from url_split. Each full client returns a
+// PRESENT HttpResponse (status -1 + `error` on failure — the current stdlib),
+// so we check r.status rather than matching an optional.
+share(all)
+fetch_url(u<UrlSplit>)<String?> -> {
+    if (u.scheme == "https") {
+        r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+        if (r.status != 200) { return String?() }
+        return String?(r.body)
+    } else if (u.scheme == "http") {
+        r2<HttpResponse> = http_get_full(u.host, u.port, u.path)
+        if (r2.status != 200) { return String?() }
+        return String?(r2.body)
+    } else {
+        return String?()
+    }
+}
+
+// Realise every pkg of `spec`, each fetched from ITS OWN `source` URL (parsed
+// via url_split, transport by scheme). Writes .src + .drv-style .meta.json per
+// derivation into `storeDir`, in dependency order. Returns realised/failed
+// counts + the order. Caller gates with a validation check first.
+share(all)
+realize_spec_url(storeDir<String>, spec<SystemSpec>)<UrlRealizeResult> -> {
+    pkgs<Vec<Pkg>> = spec.pkgs
+    order<String> = resolve(pkgs)
+    recs<Vec<RealRec>> = real_table(pkgs)
+    occ<Int> = order_count(order)
+    realised<Int> = 0
+    failed<Int> = 0
+    if (occ > 0) {
+        for (k in 0..occ-1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(pkgs, nm)
+            pkg<Pkg> = pkgs.get(i)
+            real<Int> = real_of(recs, nm)
+            u2<UrlSplit> = url_split(pkg.source)
+            match (fetch_url(u2)) {
+                bytes -> {
+                    ch<Int> = content_hash(bytes, nm, pkg.version)
+                    deps<Vec<Dep>> = pkg.deps
+                    ij<String> = meta_inputs(pkgs, recs, deps)
+                    if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
+                        realised = realised + 1
+                    } else {
+                        failed = failed + 1
+                    }
+                }
+                ? -> { failed = failed + 1 }
+            }
+        }
+    }
+    return UrlRealizeResult { realised = realised, failed = failed, order = order }
+}

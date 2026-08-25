@@ -1,0 +1,180 @@
+// build-closure.vyb — VybOS M2 step: realise a REAL dependency CLOSURE.
+//
+// Goes beyond M1 (fetch one blob into the store) to the M2 model:
+//   config (SystemSpec with typed deps) -> resolve() topological order ->
+//   real_table() closure-aware store identities -> fetch in dep-first order ->
+//   write each source blob + a per-derivation `.meta.json` (the .drv analogue:
+//   name/version/source, the REAL content hash of the fetched bytes, the
+//   closure-aware store identity, and the closure of direct inputs w/ paths).
+//
+// Flat store (no mkdir needed yet — RFE-M2 #1): each derivation is two files
+//   store/<real>-<name>-<version>.src
+//   store/<real>-<name>-<version>.meta.json
+// The `.src` name uses the CLOSURE-aware `real` (from real_table), so a
+// transitive dep change bumps the dependent's path — content-addressing over
+// the dependency closure, exactly the NixOS property.
+//
+// Shared dependency (zlib used by both gzip and openssl) is realised ONCE and
+// referenced from both metas — the dedup/caching property.
+//
+// Sources are deterministic httpbin bodies so the realizer is reproducible.
+// HTTPS/tar and URL parsing remain the later slice (doc/RFE-M2.md Items 3,4).
+
+import collections
+import http::{http_get_full, HttpResponse}
+import io
+import vybos::{content_hash}
+import plan::{Pkg, Dep, SystemSpec, RealRec,
+              resolve, resolve_issue, real_table, real_of, find_pkg,
+              order_count, token_kth}
+
+// ---- derivation: build a Pkg with a FRESH internal deps Vec (move-safe) ----
+deriv(name<String>, ver<String>, src<String>, depNames<Vec<String>>)<Pkg> -> {
+    deps<Vec<Dep>> = Vec()
+    m<Int> = depNames.len()
+    if (m > 0) {
+        for (k in 0..m-1) { deps.push(Dep { name = depNames.get(k), kind = "runtime" }) }
+    }
+    return Pkg { name = name, version = ver, source = src, deps = deps, storePath = "" }
+}
+
+// httpbin mirror mapping for this demo (port 80, all deterministic bodies).
+mirror_host(name<String>)<String> -> {
+    return select(name) -> {
+        {"gzip"}    -> "httpbin.org",
+        {"zlib"}    -> "httpbin.org",
+        {"openssl"} -> "httpbin.org",
+        ?           -> "httpbin.org"
+    }
+}
+mirror_path(name<String>)<String> -> {
+    return select(name) -> {
+        {"gzip"}    -> "/html",
+        {"zlib"}    -> "/robots.txt",
+        {"openssl"} -> "/base64/aGVsbG8gdnlib3M=",
+        ?           -> "/html"
+    }
+}
+mirror_src(name<String>)<String> -> {
+    return "http://httpbin.org" + mirror_path(name)
+}
+
+// version of a named pkg (for store-path strings), or "" if absent.
+version_of(pkgs<Vec<Pkg>>, name<String>)<String> -> {
+    i<Int> = find_pkg(pkgs, name)
+    if (i >= 0) { return pkgs.get(i).version }
+    return ""
+}
+
+// Build the `inputs` JSON object (direct dep -> kind + closure store path)
+// for one derivation, from its own dep list and the closure rec table.
+meta_inputs(pkgs<Vec<Pkg>>, recs<Vec<RealRec>>, deps<Vec<Dep>>)<String> -> {
+    s<String> = "{"
+    m<Int> = deps.len()
+    if (m > 0) {
+        for (k in 0..m-1) {
+            dk<Dep> = deps.get(k)
+            dr<Int> = real_of(recs, dk.name)
+            dv<String> = version_of(pkgs, dk.name)
+            if (k > 0) { s = s + "," }
+            s = s + "\"" + dk.name + "\": {\"kind\": \"" + dk.kind +
+                "\", \"storePath\": \"/vyb/store/" + dr.to_string() + "-" +
+                dk.name + "-" + dv + "\"}"
+        }
+    }
+    s = s + "}"
+    return s
+}
+
+// write source + .meta.json for one realised derivation. Returns true on both
+// writes succeeding (flat store: files only, no dirs to create).
+realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<Int>,
+            real<Int>, inputsJson<String>)<Bool> -> {
+    sp<String> = "/vyb/store/" + real.to_string() + "-" + pkg.name + "-" + pkg.version
+    base<String> = storeDir + "/" + real.to_string() + "-" + pkg.name + "-" + pkg.version
+    // source blob
+    okS<Bool> = false
+    match (open_write(base + ".src")) {
+        w -> { n<Int> = write_str(w, bytes) else -1; close(w); okS = (n >= 0) }
+        ? -> { okS = false }
+    }
+    if (!okS) { return false }
+    // .drv-style metadata
+    meta<String> = "{\"name\": \"" + pkg.name +
+        "\", \"version\": \"" + pkg.version +
+        "\", \"source\": \"" + pkg.source +
+        "\", \"contentHash\": " + contentHash.to_string() +
+        ", \"closureReal\": " + real.to_string() +
+        ", \"storePath\": \"" + sp +
+        "\", \"inputs\": " + inputsJson + "}"
+    okM<Bool> = false
+    match (open_write(base + ".meta.json")) {
+        w -> { n2<Int> = write_str(w, meta) else -1; close(w); okM = (n2 >= 0) }
+        ? -> { okM = false }
+    }
+    return okM
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    println("=== VybOS M2: real dependency-closure realization + .drv-style metadata ===")
+
+    // Config: a real 3-node graph. gzip and openssl both depend on zlib.
+    zlibNames<Vec<String>> = Vec()
+    needZlib<Vec<String>> = Vec(); needZlib.push("zlib")
+
+    spec<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    spec.pkgs.push(deriv("zlib",    "1.3", mirror_src("zlib"),    zlibNames))
+    spec.pkgs.push(deriv("gzip",    "2.0", mirror_src("gzip"),    needZlib))
+    spec.pkgs.push(deriv("openssl", "3.1", mirror_src("openssl"), needZlib))
+
+    // gate: validate BEFORE any fetch/write side effect.
+    issue<String> = resolve_issue(spec.pkgs)
+    if (issue.len() > 0) {
+        println("  VALIDATION FAILED: " + issue)
+        return 1
+    }
+    println("  validation: clean (unknown-dep & cycle gates pass)\n")
+
+    order<String> = resolve(spec.pkgs)
+    recs<Vec<RealRec>> = real_table(spec.pkgs)
+    println("  topological order: " + order + "\n")
+
+    occ<Int> = order_count(order)
+
+    realised<Int> = 0
+    failed<Int> = 0
+    if (occ > 0) {
+        for (k in 0..occ-1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(spec.pkgs, nm)
+            pkg<Pkg> = spec.pkgs.get(i)
+            real<Int> = real_of(recs, nm)
+            r<HttpResponse> = http_get_full(mirror_host(nm), 80, mirror_path(nm))
+            if (r.status != 200) {
+                println("  FAILED  " + nm + " (non-200 " + r.status.to_string() + ")")
+                failed = failed + 1
+            } else {
+                bytes<String> = r.body
+                ch<Int> = content_hash(bytes, nm, pkg.version)
+                deps<Vec<Dep>> = pkg.deps
+                ij<String> = meta_inputs(spec.pkgs, recs, deps)
+                if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
+                    println("  REALISED " + nm + "-" + pkg.version +
+                            "  closure=" + real.to_string() +
+                            "  contentHash=" + ch.to_string())
+                    realised = realised + 1
+                } else {
+                    println("  FAILED  " + nm + " (write)");
+                    failed = failed + 1
+                }
+            }
+        }
+    }
+
+    println("")
+    println("realised=" + realised.to_string() + " failed=" + failed.to_string())
+    println("flat store dir: " + storeDir + "/  (source + .meta.json per derivation)")
+    if (failed > 0) { return 1 }
+    return 0
+}

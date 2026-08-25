@@ -31,6 +31,9 @@ the config language is the language.
 - Not a fork of the Vyb compiler; that repo stays the implementation agent's.
 - The store's exact filesystem layout/name is unresolved until the derivation
   work begins (avoid churn).
+- First boot target **DECIDED (2026-08-25): Option B — container rootfs first**
+  (see `doc/PLAN_BOOTABLE_IMAGE.md`); full QEMU kernel+initramfs is the
+  follow-on milestone.
 
 ## Current Milestone
 
@@ -43,7 +46,59 @@ ACTUAL source bytes (content address) → materialize into `store/` →
 reproducible store paths. Store layout settled in `doc/STORE-LAYOUT.md`.
 Realised via `build/build-store.vyb` using the `http_get_full` client.
 
-**M2 (next)**: real dependency graph → materialize a transitive closure, add
-per-derivation metadata (`.drv`-style) + nested store (needs `mkdir` in the
-runtime), then HTTPS/tarball fetch and generations/rollback. Blockers listed in
+**M2 (done 2026-08-24)**: real dependency graph → materialize a transitive
+closure with `.drv`-style metadata, a generation store with rollback, and real
+package source-tree realization from a gzipped POSIX tar.
+
+- **Closure realizer** `build/build-closure.vyb` (graph framework in
+  `modules/plan.vyb`): topological resolve → closure-aware store identities →
+  fetch in dep order → `.meta.json`. Reproducible; transitive-bump verified.
+- **Generations** `build/generations.vyb`: append-only `index.json` ledger,
+  per-generation spec + reachable-paths set, ancestor-chain rollback validity.
+  All invariants pass.
+- **Source-tree realization** `build/build-package.vyb` via the stdlib
+  `archive` module (gzip inflate + POSIX tar extract, byte-verified): members
+  content-addressed by real bytes into the flat store + tree manifest.
+
+Remaining M2 pieces: nested store (needs the `mkdir` RFE; the tree realizer
+flattens member paths for now). URL→(host,port,path) parsing is done
+framework-side: `modules/url.vyb` (`url_split`) + `build/build-url.vyb` (RFE-M2
+Item 4 acceptance vectors, offline) and `build/build-package-url.vyb` — a
+URL-driven realizer that parses ONE url string, selects the http client by
+scheme, fetches real bytes, and realizes the tree (byte-verified +
+reproducible). A Vyb compiler regression hit mid-M2 (uncommitted deep-copy
+edits double-freed the graph code) — escalated as `rickenator/Vyb#184`, fixed
+upstream (`7a4b4a8`), all slices re-verified. Blockers listed in
 `doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.
+
+**Module composition (2026-08-24):** the *how `modules/*` combine* piece of
+M2/M3 landed — `modules/compose.vyb` (a `Module` contribution type, a pure
+`compose` fold over module functions, and a `compose_issue` validation gate),
+example modules (`sshd`/`getty`/`vim`), a 15-invariant self-test
+(`build/build-compose.vyb`), and `doc/COMPOSITION.md`. `config/system.vyb` now
+assembles the machine by folding module contributions. This is the NixOS
+`options`/`config` idea in vybey: a module is a typed function (params are its
+options), so there is no options schema to interpret — the call site is the
+declaration. The convention is wired into the transition pipeline via
+`build/build-apply.vyb` (compose `cur`/`des` → `compose_issue` gate → `spec_digest`
+→ deterministic `plan_lines` install/keep/remove — the `vyb system apply`
+dry-run), with an added `nginx` example module for a real install/remove
+delta. All 10 apply invariants PASS on the isolated toolchain. The execution
+half is `modules/realize.vyb` (shared realizer core promoted out of
+build-closure: closure identity + topological fetch → content-hash → write
+`.src` + `.drv`-style `.meta.json`) driven by `build/build-exec.vyb`, which
+composes a module-built desired spec and realises it; all 11 execute
+invariants PASS. **Real HTTPS URL-driven realization** (`modules/urlrealize.vyb`
++ `build/build-url-realize.vyb`): a package's own `source` URL is parsed by
+`url_split`, the scheme selects the transport (`http_get_full` vs
+`https_get_full_verified` with the system CA), and real GitHub-raw bytes are
+fetched over genuine TLS, content-addressed, and written to the store — 9
+invariants PASS.
+
+**Toolchain isolation (2026-08-24)**: VybOS now builds/runs against an
+**isolated Vyb worktree** — `~/Projects/Vyb-vybos` (branch `vyb-os-stable`,
+pinned to the fixed commit) — created via
+`git -C ~/Projects/Vyb worktree add -b vyb-os-stable ~/Projects/Vyb-vybos`.
+This insulates VybOS from impl-agent churn on the main Vyb checkout; the main
+repo stays for the implementation agent. Run commands updated in README/AGENTS.
+

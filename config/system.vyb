@@ -1,39 +1,56 @@
-// system.vyb — a concrete machine declaration for VybOS (M0).
+// system.vyb — a concrete machine declaration for VybOS, built by MODULE
+// COMPOSITION (modules/compose.vyb). This is the config-as-program proof at
+// the module level: evaluating this program under the Vyb JIT yields a full
+// SystemSpec, assembled by folding typed module contributions instead of a
+// bespoke config DSL.
 //
-// Evaluating this program under the Vyb JIT must yield a full SystemSpec.
-// This is the config-as-program proof: no interpreter, just vybey + JIT.
-// Anything here can be changed and re-evaluated; the store paths and spec
-// are pure functions of the declared inputs.
+// The convention (doc/COMPOSITION.md): each `modules/*.vyb` exports a
+// function taking its OWN options and returning a Module contribution;
+// `compose()` folds them into the SystemSpec. Toggling a module on/off here
+// is a one-line change (true -> false). machine-valid output goes through
+// spec.to_string() (Vyb's clean nested JSON), not main() auto-serialization.
 
 import collections
-import vybos::{SystemSpec, Package, Service, derive, service, new_spec}
+import compose::{Module, blank_system, compose, compose_issue}
+import plan::{SystemSpec, Pkg, Service}
+import sshd::{sshd}
+import getty::{getty}
+import vim::{vim}
 
 main()<Int> -> {
-    spec<SystemSpec> = new_spec("x86_64-linux")
+    // Declare which modules this machine runs and with what options.
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(true))       // OpenSSH server
+    mods.push(getty(true))      // serial console on tty1
+    mods.push(vim(true))        // vim editor (package only)
 
-    spec.packages.push(derive("bash",    "5.2.26", "https://ftp.gnu.org/gnu/bash/bash-5.2.26.tar.gz"))
-    spec.packages.push(derive("coreutils","9.4",   "https://ftp.gnu.org/gnu/coreutils/coreutils-9.4.tar.xz"))
-    spec.packages.push(derive("vim",     "9.1",   "https://github.com/vim/vim/archive/v9.1.tar.gz"))
+    base<SystemSpec> = blank_system("x86_64-linux", "vybos-test")
+    spec<SystemSpec> = compose(base, mods)
 
-    spec.services.push(service("sshd",  "/run/current-system/sw/sbin/sshd"))
-    spec.services.push(service("getty", "/run/current-system/sw/bin/agetty --noclear tty1"))
-
-    println("=== VybOS SystemSpec (JIT-evaluated) ===")
+    // Any non-empty issue means the merged system is invalid — abort before
+    // it could ever be realised. This mirrors the realizer's pre-flight gate.
+    issue<String> = compose_issue(spec)
+    println("=== VybOS SystemSpec (module-composed, JIT-evaluated) ===")
     println("system: " + spec.system)
+    println("hostname: " + spec.hostname)
+    println("validate: " + if (issue == "") { "clean" } else { "ISSUE: " + issue })
 
-    // Note: `for (x in structField)` does not resolve the Vec iterator bind in
-    // Vyb yet, so bind the member Vecs to locals first (verified workaround).
-    our_pkgs<Vec<Package>> = spec.packages
-    our_svcs<Vec<Service>> = spec.services
-
-    println("packages (" + our_pkgs.len().to_string() + "):")
-    for (p in our_pkgs) {
+    println("packages (" + spec.pkgs.len().to_string() + "):")
+    pkgs<Vec<Pkg>> = spec.pkgs
+    for (p in pkgs) {
         println("  " + p.name + " " + p.version + "  ->  " + p.storePath)
     }
 
-    println("services (" + our_svcs.len().to_string() + "):")
-    for (s in our_svcs) {
+    println("services (" + spec.services.len().to_string() + "):")
+    svcs<Vec<Service>> = spec.services
+    for (s in svcs) {
         println("  [" + s.enabled.to_string() + "] " + s.name + " :: " + s.command)
     }
+
+    println("")
+    println("--- SystemSpec JSON (machine contract) ---")
+    println(spec.to_string())
+
+    if (issue != "") { return 1 }
     return 0
 }

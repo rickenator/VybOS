@@ -1,0 +1,190 @@
+// build-package.vyb — VybOS M2 step: realise a REAL package SOURCE TREE from
+// a gzipped POSIX tar, using the stdlib `archive` module (verified 2026-08-24:
+// inflate_gzip + extract_tar reproduce members byte-identically).
+//
+// Goes beyond M1/M2's single fetched blob: it materialises the *members* of an
+// archive into the store, each content-addressed by its REAL inflated bytes,
+// plus a per-package `.meta.json` manifest (the extracted-tree analogue of the
+// `.drv`). Properties demonstrated:
+//   - determinism: same tar -> same per-member + package content addresses.
+//   - content-addressing over real bytes: a member change -> new addresses.
+//   - dedup surface: identical member bytes yield the same member CA.
+//
+// Store layout (FLAT — the runtime has no mkdir yet, so no subdirectories):
+//   store/<memberCA>-<flattened-path>.src            one file per member
+//   store/<pkgCA>-<name>-<version>.meta.json         the tree manifest
+//   memberCA = FNV-1a over (name:version:memberpath + real inflated bytes)
+//   pkgCA    = FNV fold of all memberCAs (+ name:version salt)
+//   flattened = member path with '/' replaced by '_' (flat-store safe)
+//
+// The "fetched source" is a deterministic local tarball (build/samples) so
+// store paths are reproducible; swapping that read for https_get_full bytes is
+// the URL-parser slice (doc/RFE-M2.md Item 4) — HTTPS itself already works.
+
+import archive::{inflate_gzip, extract_tar, TarEntry}
+import io::{open_read, read_all, close, open_write, write_str}
+import collections
+
+// carrier for realize_once results
+struct MetaOut { pkgCA<Int>, n<Int>, meta<String>, fails<Int> }
+
+// ---- small string / hash helpers (all correct 0..len-1 ranges) ----
+
+// does `h` contain substring `nd`?
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+// flatten a tar member path into a flat-store-safe single filename.
+flatten(path<String>)<String> -> {
+    out<String> = ""
+    l<Int> = path.len()
+    for (i in 0..l-1) {
+        c<Int> = path.char_at(i)
+        if (c == 47) { out = out + "_" } else { out = out + String::from_byte(c & 255) }
+    }
+    return out
+}
+
+// content address over real bytes + a salt; normalized non-negative FNV-1a.
+ca(data<String>, salt<String>)<Int> -> {
+    tag<String> = salt + ":" + data
+    h<Int> = 2166136261
+    l<Int> = tag.len()
+    if (l > 0) {
+        for (i in 0..l-1) {
+            c<Int> = tag.char_at(i) & 255
+            h = (h * 16777619) ^ c
+        }
+    }
+    if (h < 0) { h = -h }
+    return h
+}
+
+// read a whole file ("" on failure/absence).
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+// write a whole file; returns success.
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// Realise the archive source once: extract members, write each to the flat
+// store content-addressed, and return the package manifest info.
+realize_once(storeDir<String>, gz<String>, name<String>, ver<String>)<MetaOut?> -> {
+    match (inflate_gzip(gz)) {
+        plain -> {
+            ents<Vec<TarEntry>> = extract_tar(plain)
+            n<Int> = ents.len()
+            salt<String> = name + ":" + ver
+            fold<Int> = 2166136261
+            members<String> = "["
+            sep<String> = ""
+            failsMember<Int> = 0
+            if (n > 0) {
+                for (i in 0..n-1) {
+                    e<TarEntry> = ents.get(i)
+                    fl<String> = flatten(e.name)
+                    mca<Int> = ca(e.data, salt + ":" + fl)
+                    fold = (fold * 16777619) ^ mca
+                    if (!write_flat(storeDir + "/" + mca.to_string() + "-" + fl + ".src", e.data)) {
+                        failsMember = failsMember + 1
+                    }
+                    members = members + sep +
+                        "{\"path\": \"" + e.name + "\", \"flat\": \"" + fl +
+                        "\", \"size\": " + e.size.to_string() +
+                        ", \"contentHash\": " + mca.to_string() +
+                        ", \"storePath\": \"/vyb/store/" + mca.to_string() + "-" + fl + ".src\"}"
+                    sep = ", "
+                }
+            }
+            members = members + "]"
+            pkgCA<Int> = fold
+            if (pkgCA < 0) { pkgCA = -pkgCA }
+            // proper JSON object: name/version/pkgCA + members array
+            meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+                "\", \"pkgCA\": " + pkgCA.to_string() +
+                ", \"members\": " + members + "}"
+            return MetaOut?(MetaOut { pkgCA = pkgCA, n = n, meta = meta, fails = failsMember })
+        }
+        ? -> { return MetaOut?() }
+    }
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    srcPath<String> = "build/samples/samplepkg-1.0.tar.gz"
+    name<String> = "samplepkg"
+    ver<String> = "1.0"
+    println("=== VybOS M2: real package source-tree realization (archive) ===")
+    println("source: " + srcPath + " (" + name + "-" + ver + ")\n")
+
+    gz<String> = read_flat(srcPath)
+    if (gz.len() == 0) { println("  FAIL cannot read source tarball"); return 1 }
+    println("  read source tarball: " + gz.len().to_string() + " bytes\n")
+
+    match (realize_once(storeDir, gz, name, ver)) {
+        m1 -> {
+            println("  realized " + m1.n.to_string() + " members; pkgCA=" + m1.pkgCA.to_string())
+            metaPath<String> = storeDir + "/" + m1.pkgCA.to_string() + "-" + name + "-" + ver + ".meta.json"
+            if (!write_flat(metaPath, m1.meta)) { println("  FAIL writing manifest"); return 1 }
+            println("  manifest: " + metaPath + "\n")
+            println("== manifest (.meta.json) ==")
+            println(m1.meta + "\n")
+
+            fails<Int> = 0
+            fails = fails + check(m1.fails == 0, "all member files written to flat store (" + m1.n.to_string() + " members)")
+            fails = fails + check(m1.n == 3, "expected 3 regular file members (dir entries are non-files)")
+
+            match (realize_once(storeDir, gz, name, ver)) {
+                m2 -> {
+                    fails = fails + check(m2.pkgCA == m1.pkgCA, "determinism: same tar -> same package CA on repeat")
+                    fails = fails + check(m2.n == m1.n, "determinism: same member count on repeat")
+                    rb<String> = read_flat(metaPath)
+                    fails = fails + check(substr_has(rb, "\"pkgCA\": " + m1.pkgCA.to_string()), "manifest readable back and carries pkgCA")
+                    fails = fails + check(substr_has(rb, "\"members\": ["), "manifest has a members array")
+                    fails = fails + check(substr_has(rb, "\"path\": \"src/lib/helper.vyb\""), "manifest lists subdir member path")
+                    fails = fails + check(!substr_has(rb, "{{"), "manifest is a single well-formed JSON object (no doubled brace)")
+                }
+                ? -> { fails = fails + check(false, "repeat realization") }
+            }
+
+            sumline<String> = ""
+            if (fails == 0) { sumline = "ALL PACKAGE-REALIZATION INVARIANTS PASS" }
+            else { sumline = fails.to_string() + " FAILURE(S)" }
+            println("")
+            println(sumline)
+            if (fails == 0) { return 0 }
+            return 1
+        }
+        ? -> { println("  FAIL inflate/extract (bad gzip?)"); return 1 }
+    }
+}

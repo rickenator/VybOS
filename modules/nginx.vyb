@@ -1,0 +1,19 @@
+// nginx.vyb — VybOS example module: the nginx web server (service + package).
+//
+// Demonstrates a module that contributes BOTH a package and a service, and is
+// the one used in build/build-apply.vyb to show a real install/remove
+// transition (absent in one generation, present in the next). Follows the
+// composition convention: takes its own options, returns an empty Module when
+// `enabled` is false.
+import collections
+import compose::{Module, empty_module, mk_pkg, mk_service, with_pkg, with_service}
+
+share(all)
+nginx(enabled<Bool>)<Module> -> {
+    m<Module> = empty_module()
+    if (enabled) {
+        m = with_pkg(m, mk_pkg("nginx", "1.26.2", "https://nginx.org/download/nginx-1.26.2.tar.gz", Vec()))
+        m = with_service(m, mk_service("nginx", "/run/current-system/sw/sbin/nginx"))
+    }
+    return m
+}
