@@ -1,0 +1,64 @@
+// rootfs.vyb — VybOS bootable-rootfs foundation (B1, Option B).
+//
+// SCOPE: the pure, framework-side description of "what a VybOS rootfs looks
+// like" — given a module-composed SystemSpec (modules/compose.vyb), build the
+// ordered list of (path -> content) files that materialize its config, and a
+// stable layout contract the launcher (issue #1) later boots. This is the
+// config-materialization core that every later boot path (container rootfs and
+// QEMU kernel+initramfs) shares, per doc/PLAN_BOOTABLE_IMAGE.md.
+//
+// Design notes (vybish, per the repo's own gotchas):
+//   - PURE: no io, no process — it returns data (Vec<FileEntry>) the entry
+//     program stages. Keeps it unit-testable offline and shares one audited
+//     layout across materializers.
+//   - Nested in-place mutation is a no-op, so files are built into a local Vec
+//     then returned whole.
+//   - Ranges are INCLUSIVE; iterate 0..len-1 and guard empties.
+//
+// The layout (/mnt/vyb or the booted root at /):
+//   /etc/vyb-os/system.json   the composed SystemSpec, machine-readable
+//   /etc/vyb-os/version       the framework/spec version marker
+//   /etc/vyb-os/services.sh   generated service launcher lines (enabled only)
+//   /usr/bin/vyb              (documented slot; not written here)
+//
+// These are the "essential filesystem paths exist" + "config parsed" smoke
+// checks the launcher's --test later asserts (issue #1).
+
+import compose::{Module, blank_system, compose, compose_issue}
+import plan::{SystemSpec, Pkg, Service, Dep}
+import collections
+
+// One file of the rootfs: a path (absolute, guest-relative) + its content.
+share(all)
+struct FileEntry { path<String>, content<String> }
+
+// A section header comment helper for the generated service script.
+share(all)
+header(name<String>)<String> -> {
+    return "# === VybOS " + name + " ===\n"
+}
+
+// Compute the rootfs files for a composed spec. Returns the ordered FileEntry
+// list (config first). Pure: no side effects.
+share(all)
+rootfs_files(spec<SystemSpec>)<Vec<FileEntry>> -> {
+    files<Vec<FileEntry>> = Vec()
+    files.push(FileEntry { path = "/etc/vyb-os/system.json", content = spec.to_string() })
+    files.push(FileEntry { path = "/etc/vyb-os/version", content = "0-b1" })
+    files.push(FileEntry { path = "/etc/vyb-os/hostname", content = spec.hostname + "\n" })
+
+    // service launcher: one line per ENABLED service
+    svcs<Vec<Service>> = spec.services
+    sh<String> = header("services")
+    n<Int> = svcs.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            s<Service> = svcs.get(i)
+            if (s.enabled) {
+                sh = sh + s.name + ") { echo \"" + s.name + " (started)\"; " + s.command + " ; }\n"
+            }
+        }
+    }
+    files.push(FileEntry { path = "/etc/vyb-os/services.sh", content = sh })
+    return files
+}

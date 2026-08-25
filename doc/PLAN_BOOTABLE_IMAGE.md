@@ -31,6 +31,9 @@ bootloader, or disk image.
 
 ## 1. Boot target decision (the fork) — needs Rick
 
+**DECIDED (2026-08-25, Rick): Option B — container rootfs first.** Remaining
+text below records both options and why B was chosen; the decision is locked.
+
 The single most consequential choice. Two viable first-boot targets:
 
 ### Option A — QEMU x86_64 kernel + initramfs (+ minimal rootfs)
@@ -57,6 +60,9 @@ The single most consequential choice. Two viable first-boot targets:
 
 **Recommendation:** **Option B first**, keep Option A as the next-boot milestone.
 Both share the rootfs/config-materialization core, so B is not wasted work.
+
+✅ **DECIDED (2026-08-25): Option B (container rootfs) first.** Rick confirmed;
+this is the boot-target the rest of this roadmap and issue #1 build toward.
 
 ---
 

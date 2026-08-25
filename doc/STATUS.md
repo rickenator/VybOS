@@ -88,8 +88,9 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       generation with rollback (needs `rename`/`symlink` RFE for the atomic
       profile flip).
 - [ ] **Boot target decision** (needs Rick): kernel+initramfs on QEMU vs
-      container rootfs first. Touches host machinery → needs explicit approval
-      before any host-affecting work.
+      container rootfs first. **DECIDED 2026-08-25: Option B — container rootfs
+      first** (see `doc/PLAN_BOOTABLE_IMAGE.md`). Rootfs + launcher groundwork
+      now targets a bootable rootfs; full QEMU kernel+initramfs is the follow-on.
 - [ ] **Module-system deepening**: service options (port, args) beyond
       `enabled`; `select`-validated dep kinds; possibly an `options`-style
       carrier struct per module.

@@ -70,9 +70,15 @@ kernel+initramfs as milestone two. The launcher is architected so the boot
 mechanism is pluggable (see §5), so picking B does not compromise the issue's
 QEMU end-state.
 
+✅ **DECIDED (2026-08-25, Rick): Option B (container rootfs first).** So
+`tools/vybos-run` v1 targets a bootable rootfs (container-runtime or
+QEMU-with-host-kernel boot), with full QEMU kernel+initramfs as the follow-on
+milestone. See `doc/PLAN_BOOTABLE_IMAGE.md` for the boot roadmap.
+
 > This is Rick's call and touches host machinery (running builds/containers,
 > mounting, loop devices), so it needs explicit approval — no host-side side
-> effects until then.
+> effects until then. (Decision made; any host-affecting run still needs the
+> approval.)
 
 ---
 

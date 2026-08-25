@@ -31,6 +31,9 @@ the config language is the language.
 - Not a fork of the Vyb compiler; that repo stays the implementation agent's.
 - The store's exact filesystem layout/name is unresolved until the derivation
   work begins (avoid churn).
+- First boot target **DECIDED (2026-08-25): Option B — container rootfs first**
+  (see `doc/PLAN_BOOTABLE_IMAGE.md`); full QEMU kernel+initramfs is the
+  follow-on milestone.
 
 ## Current Milestone
 

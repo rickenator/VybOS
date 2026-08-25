@@ -1,0 +1,144 @@
+// build-rootfs.vyb — VybOS B1 (Option B): rootfs materialization from a
+// module-composed SystemSpec.
+//
+// Pipeline:
+//   config (modules sshd/getty/vim/nginx) -> compose() -> SystemSpec
+//   -> compose_issue gate
+//   -> rootfs_files(spec)  (pure: ordered path->content FileEntry list,
+//                           modules/rootfs.vyb)
+//   -> STAGE: mkdir -p each parent (freedom{exec_run} fallback — no stdlib
+//             mkdir/RFE yet) then write each file
+//   -> verify the layout exists on disk; print the staged tree.
+//
+// The staged dir is the candidate rootfs the launcher (issue #1) will later
+// boot. Honors immutability: nothing here touches the canonical build/store
+// artifacts; output goes to a fresh staging dir (default build/rootfs-out).
+//
+// Deterministic + framework-side; only the mkdir fallback shells out (a
+// documented compat path until the mkdir RFE lands).
+import collections
+import io
+import io::{open_write, write_str, close, open_read, read_all}
+import process::{exec_run}
+import compose::{Module, blank_system, compose, compose_issue}
+import plan::{SystemSpec, Service}
+import rootfs::{FileEntry, rootfs_files}
+import sshd::{sshd}
+import getty::{getty}
+import vim::{vim}
+import nginx::{nginx}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// naive substring test.
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+// run a host command; returns exit code (or -1 if it couldn't launch).
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+// read a whole file ("" on failure/absence).
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+// parent dir of an absolute/relative path (everything before the last '/').
+parent_dir(p<String>)<String> -> {
+    l<Int> = p.len()
+    last<Int> = -1
+    if (l > 0) {
+        for (i in 0..l-1) { if (p.char_at(i) == 47) { last = i } }
+    }
+    if (last >= 0) { return p.substring(0, last) }
+    return "/"
+}
+
+// write one file, mkdir-ing its parent dir first (shell fallback; then write).
+// Returns success.
+stage_file(stage<String>, e<FileEntry>)<Bool> -> {
+    path<String> = stage + e.path
+    par<String> = stage + parent_dir(e.path)
+    if (run("mkdir -p \"" + par + "\"") != 0) { return false }
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, e.content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+main()<Int> -> {
+    stage<String> = "build/rootfs-out"
+    println("=== VybOS B1: rootfs materialization (Option B, container rootfs) ===\n")
+    fails<Int> = 0
+
+    // fresh staging dir
+    if (run("rm -rf " + stage + " && mkdir -p " + stage) != 0) {
+        println("  FAIL fresh staging dir"); return 1
+    }
+
+    // compose the system from modules
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(true))
+    mods.push(getty(true))
+    mods.push(vim(true))
+    mods.push(nginx(true))
+    spec<SystemSpec> = compose(blank_system("x86_64-linux", "rootfs-test"), mods)
+
+    fails = fails + check(compose_issue(spec) == "", "composed spec is clean (gate pass)")
+
+    // pure layout
+    files<Vec<FileEntry>> = rootfs_files(spec)
+    n<Int> = files.len()
+    fails = fails + check(n >= 3, "rootfs_files yields config + services entries")
+
+    // stage every file
+    staged<Int> = 0
+    if (n > 0) {
+        for (i in 0..n-1) {
+            if (stage_file(stage, files.get(i))) { staged = staged + 1 }
+        }
+    }
+    fails = fails + check(staged == n, "all rootfs files staged successfully")
+
+    // verify key paths exist + config is well-formed JSON
+    sysRaw<String> = read_flat(stage + "/etc/vyb-os/system.json")
+    fails = fails + check(substr_has(sysRaw, "\"hostname\": \"rootfs-test\""), "system.json has the composed spec JSON")
+    fails = fails + check(substr_has(sysRaw, "\"services\""), "system.json lists services")
+    shRaw<String> = read_flat(stage + "/etc/vyb-os/services.sh")
+    fails = fails + check(substr_has(shRaw, "sshd)"), "services.sh has an enabled-service launcher")
+    fails = fails + check(substr_has(shRaw, "# === VybOS services ===\n"), "services.sh header present")
+
+    println("")
+    println("  staged " + staged.to_string() + " files into: " + stage + "/")
+    println("  layout: /etc/vyb-os/{system.json, version, hostname, services.sh}")
+    println("")
+
+    sum<String> = "ALL B1 ROOTFS-MATERIALIZATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

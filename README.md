@@ -110,6 +110,9 @@ $VYB build/build-exec.vyb --module-path modules   # needs network (httpbin)
 # REAL HTTPS URL-driven realization (scheme -> verified TLS fetch -> store):
 $VYB build/build-url-realize.vyb --module-path modules   # needs network (github raw)
 
+# B1 rootfs materialization (Option B) — compose -> stage config layout:
+$VYB build/build-rootfs.vyb --module-path modules   # stages build/rootfs-out/
+
 # M1 — realise derivations: real fetch -> content-addressed store (needs network):
 mkdir -p store   # store/ is gitignored (build cache)
 $VYB build/build-store.vyb --module-path modules
@@ -155,7 +158,8 @@ $VYB build/build-package-url.vyb --module-path modules
 - [x] Real HTTPS URL-driven realization: `modules/urlrealize.vyb` (`fetch_url` picks http/https by scheme from `url_split`) + `build/build-url-realize.vyb` (fetch a real GitHub-raw source over verified TLS → content-address → store). PASS on the isolated toolchain.
 - [x] Real crypto digest / HTTPS-fetch gaps scoped — `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) drafted for the Vyb implementation agent; gzip+tar **extraction** landed in the stdlib `archive` module; HTTPS itself already works.
 - [x] Generations/profiles + rollback bookkeeping (atomic symlink switch still awaits the `rename`/`symlink` RFE — current pointer is a file rewrite).
-- [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.
+- [x] B1 rootfs materialization (Option B): `modules/rootfs.vyb` (pure `rootfs_files` layout) + `build/build-rootfs.vyb` (compose → stage `/etc/vyb-os` config into `build/rootfs-out/` via `freedom{exec_run}` mkdir fallback until stdlib `mkdir`). PASS on the isolated toolchain.
+- [ ] Boot target (**DECIDED 2026-08-25: Option B — container rootfs first**): rootfs + launcher groundwork target a bootable rootfs; full QEMU kernel+initramfs is the follow-on (see `doc/PLAN_BOOTABLE_IMAGE.md`, `doc/PLAN-QEMU-LAUNCHER.md`).
 - [x] Init GitHub repo (remote configured: `rickenator/VybOS`). Local commits (incl. M2) await push approval; Vyb toolchain regression escalated & fixed as `rickenator/Vyb#184`.
 
 ## Notes
