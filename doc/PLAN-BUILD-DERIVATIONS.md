@@ -38,6 +38,14 @@ mirroring Nix derivations.
    (a `freedom exec` of the host toolchain is NOT a derived toolchain). A real
    VybOS `gcc`/`binutils` (or musl-based) toolchain, itself built from source,
    is the honest prerequisite for self-hosting builds. (Large; parallel-track.)
+   - **1a. LANDED — a SELF-HOSTING C COMPILER as a derivation (chibicc)**:
+     `build/build-derive-compiler.vyb` fetches `github.com/rui314/chibicc`
+     source, realizes it, builds GEN-1 with the host cc, then BOOTSTRAPS:
+     GEN-1 recompiles chibicc's own source into GEN-2. Both generations are
+     content-addressed ELF and both compile real programs (the GEN-2-built
+     program runs). This is the roll-your-own compiler bootstrap — "compilers
+     are not magic" — and proves a compiler-in-a-derivation. Full gcc/binutils
+     derivation remains the larger follow-on.
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via

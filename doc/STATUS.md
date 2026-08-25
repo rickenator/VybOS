@@ -98,6 +98,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       content-addressed + `.meta.json`, runs.
     Foundation for toolchain/Linux derivations + issue #4's `build.plan`.
     See doc/PLAN-BUILD-DERIVATIONS.md.
+11. **COMPILER BOOTSTRAP (self-hosting)** — `build/build-derive-compiler.vyb`:
+    a working C compiler as a derivation. Fetches chibicc source over verified
+    TLS, builds GEN-1 (host cc), then **GEN-1 recompiles chibicc's own source
+    into GEN-2** (roll-your-own bootstrap). Both generations are content-
+    addressed ELF, both compile real programs (the GEN-2-built program runs).
+    See doc/PLAN-BUILD-DERIVATIONS §1a.
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -159,11 +165,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       `enabled`; `select`-validated dep kinds; possibly an `options`-style
       carrier struct per module.
 - [ ] **Build-stage derivations → kernels-from-source** (see
-      doc/PLAN-BUILD-DERIVATIONS.md): spike (hello-vyb, byte-reproducible) AND
-      real fetched source (busybox 1.36.1 → built ELF, content-addressed) landed.
-      Next: toolchain-as-derivation, then Linux kernel as the flagship — turning
-      the fetched QEMU vmlinuz into a *derived* VybOS kernel and giving issue
-      #4's `build.plan` a real `linux-<ver>-vyb` package to reference.
+      doc/PLAN-BUILD-DERIVATIONS.md): landed — hello-vyb (byte-reproducible),
+      busybox 1.36.1 (real fetched source → built ELF), and a SELF-HOSTING C
+      compiler bootstrap (chibicc: GEN-1 compiler → GEN-2 via self-recompile).
+      Next: full gcc/binutils toolchain-as-derivation, then Linux kernel as the
+      flagship — turning the fetched QEMU vmlinuz into a *derived* VybOS kernel
+      and giving issue #4's `build.plan` a real `linux-<ver>-vyb` package.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 
