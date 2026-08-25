@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# tools/vybos-run — VybOS container-rootfs launcher (issue #1 launcher shape).
+#
+# Boots the staged VybOS rootfs (default build/rootfs-out) in a DISPOSABLE
+# container: a temp overlay copy is seeded with a static BusyBox userspace
+# (host /usr/bin/busybox), the rootfs becomes the container root /, and the
+# config-driven /init runs to a defined VYBOS_READY state. The canonical rootfs
+# is NEVER modified — writes happen only in the disposable overlay (tmp, rm'd
+# on exit unless --keep).
+#
+# Honest scope: this is a CONTAINER-ROOTFS boot (plan B1 + B3-lite: config +
+# minimal userspace + init). It is NOT a QEMU kernel+initramfs boot — that is
+# the later B4 milestone (doc/PLAN_BOOTABLE_IMAGE.md). The userspace is a
+# stand-in static BusyBox seeded at launch time, until VybOS ships its own.
+#
+# Usage:
+#   tools/vybos-run [--rootfs <dir>] [--runtime bwrap|docker] [--keep] [--test]
+#     --test      boot and assert config paths exist + init reached READY -> exit 0/1
+#     --runtime   bwrap (default, unprivileged) | docker (needs docker daemon + group)
+#     --rootfs    staged rootfs dir (default ../build/rootfs-out)
+#     --keep      keep the disposable overlay on exit (debugging)
+#     --busybox   path to a static busybox to seed (default /usr/bin/busybox)
+#
+set -uo pipefail
+
+# repo root = parent of this script's dir
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOTFS="${VYBOS_ROOTFS:-$ROOT/build/rootfs-out}"
+VYB="${VYB:-$HOME/Projects/Vyb-vybos/build/vyb}"
+VYB_STDLIB="${VYB_STDLIB:-$HOME/Projects/Vyb-vybos/stdlib}"
+BUSYBOX="${BUSYBOX:-/usr/bin/busybox}"
+MODE=run
+RUNTIME="${VYBOS_RUNTIME:-bwrap}"
+KEEP=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --test) MODE=test ;;
+    --keep) KEEP=1 ;;
+    --rootfs) ROOTFS="$2"; shift ;;
+    --runtime) RUNTIME="$2"; shift ;;
+    --busybox) BUSYBOX="$2"; shift ;;
+    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# 1. rootfs must be materialized (build it if absent).
+if [ ! -d "$ROOTFS/etc/vyb-os" ]; then
+  echo "rootfs not materialized; running build-rootfs.vyb..." >&2
+  ( cd "$ROOT" && VYB_STDLIB="$VYB_STDLIB" "$VYB" build/build-rootfs.vyb --module-path modules ) >&2 || { echo "build-rootfs failed" >&2; exit 1; }
+fi
+if [ ! -f "$ROOTFS/init" ]; then
+  echo "rootfs has no /init (rebuild with the current modules)" >&2; exit 1
+fi
+
+# 2. disposable overlay: copy rootfs, seed static busybox + RELATIVE applet links.
+OVL=$(mktemp -d /tmp/vybos-run.XXXXXX)
+cleanup() { [ "$KEEP" = 0 ] && rm -rf "$OVL"; }
+trap cleanup EXIT
+cp -a "$ROOTFS"/. "$OVL"/
+mkdir -p "$OVL/bin"
+cp "$BUSYBOX" "$OVL/bin/busybox"; chmod +x "$OVL/bin/busybox"
+"$OVL/bin/busybox" --install -s "$OVL/bin" >/dev/null 2>&1 || true
+# busybox --install makes ABSOLUTE symlinks (-> /tmp/.../busybox) that dangle
+# once the overlay is the sandbox root; rewrite applet links to RELATIVE
+# `busybox` so they resolve inside the booted root.
+python3 - "$OVL/bin" <<'PY'
+import os, sys
+d = sys.argv[1]
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if os.path.islink(p) and n != "busybox":
+        os.unlink(p); os.symlink("busybox", p)
+PY
+
+# 3. boot it.
+case "$RUNTIME" in
+  bwrap)
+    OUT=$(bwrap --bind "$OVL" / --proc /proc --dev /dev --tmpfs /tmp \
+          --die-with-parent --chdir / -- /bin/sh /init 2>&1)
+    rc=$?
+    ;;
+  docker)
+    # faithful container-rootfs: import the overlay as an ephemeral image, run /init.
+    ( cd "$OVL" && tar -c . | docker import - vybos:rootfs >/dev/null 2>&1 )
+    OUT=$(docker run --rm --read-only vybos:rootfs /bin/sh /init 2>&1)
+    rc=$?
+    ;;
+  *)
+    echo "unknown --runtime: $RUNTIME" >&2; exit 2 ;;
+esac
+echo "$OUT"
+
+# 4. validate: config paths present in the root + init reached READY.
+paths_ok=1
+for p in /etc/vyb-os/system.json /etc/vyb-os/version /etc/vyb-os/hostname /etc/vyb-os/services.sh /init; do
+  if [ ! -e "$OVL$p" ]; then echo "MISSING (root): $p" >&2; paths_ok=0; fi
+done
+ready=0
+echo "$OUT" | grep -q 'VYBOS_READY=1' && ready=1
+echo ""
+
+if [ "$MODE" = test ]; then
+  if [ "$paths_ok" = 1 ] && [ "$ready" = 1 ] && [ "$rc" = 0 ]; then
+    echo "VYBOS-RUN TEST PASS (ready, all config paths present)"
+    exit 0
+  fi
+  echo "VYBOS-RUN TEST FAIL (paths_ok=$paths_ok ready=$ready rc=$rc)"
+  exit 1
+fi
+exit "$rc"

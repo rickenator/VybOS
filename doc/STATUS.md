@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (toolchain sync → full pipeline over real HTTPS)
+> last_updated: 2026-08-25 (container-rootfs launcher: rootfs boots to READY)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -38,6 +38,7 @@ $VYB build/build-apply.vyb    --module-path modules    # apply dry-run, offline
 $VYB build/build-exec.vyb     --module-path modules    # execute plan, needs httpbin
 $VYB build/build-url-realize.vyb --module-path modules # real HTTPS, needs network
 $VYB build/build-exec-real.vyb --module-path modules   # FULL pipeline over real HTTPS (~20MB fetch)
+$ROOT/tools/vybos-run --test      # container-rootfs boot to READY (bwrap/docker; builds rootfs if absent)
 ```
 
 ## 2. Current state (all committed, pushed, 7/7 PASS)
@@ -72,6 +73,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
    invariants, deterministic. (vim's module source now points at the DIRECT
    codeload endpoint — github's /archive/ URL 302-redirects, which the verified
    client doesn't follow.)
+9. **Container-rootfs launcher** — `tools/vybos-run`: boots the staged rootfs in
+   a disposable container (bwrap default, unprivileged; or docker). The rootfs's
+   config-driven `/init` reaches a defined `VYBOS_READY` state; `--test` asserts
+   config paths + ready. Stand-in userspace = static BusyBox seeded into the
+   overlay at launch (canonical rootfs never modified). See PLAN_BOOTABLE_IMAGE
+   §B1+B3-lite.
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -117,10 +124,11 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       `build/generations.vyb` so a module-composed switch is recorded as a
       generation with rollback (needs `rename`/`symlink` RFE for the atomic
       profile flip).
-- [ ] **Boot target decision** (needs Rick): kernel+initramfs on QEMU vs
+- [x] **Boot target decision** (needs Rick): kernel+initramfs on QEMU vs
       container rootfs first. **DECIDED 2026-08-25: Option B — container rootfs
-      first** (see `doc/PLAN_BOOTABLE_IMAGE.md`). Rootfs + launcher groundwork
-      now targets a bootable rootfs; full QEMU kernel+initramfs is the follow-on.
+      first** (see `doc/PLAN_BOOTABLE_IMAGE.md`). Container-rootfs boot landed
+      (B1 materialize + B3-lite init/userspace via `tools/vybos-run --test`);
+      full QEMU kernel+initramfs (B4) is the follow-on, still open.
 - [ ] **Module-system deepening**: service options (port, args) beyond
       `enabled`; `select`-validated dep kinds; possibly an `options`-style
       carrier struct per module.

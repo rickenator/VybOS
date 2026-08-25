@@ -23,8 +23,10 @@ bootloader, or disk image.
 | Config-as-program | ✅ stable (module-composed `SystemSpec`) |
 | Compose / plan / execute | ✅ stable (frame all vi vbey) |
 | Realized store | ✅ `store/<hash>-<name>-<ver>.src` + `.meta.json` (source blobs & trees, flat; nested store blocked on `mkdir` RFE) |
-| Kernel / initramfs / rootfs / bootloader | ❌ absent |
-| Boot target decision | ⏳ open (Option A vs B below) |
+| Rootfs materialize (B1) | ✅ `build-rootfs.vyb` → `build/rootfs-out` (`/etc/vyb-os/*` + config-driven `/init`) |
+| Container-rootfs boot (B1+B3-lite) | ✅ `tools/vybos-run --test` boots the rootfs to `VYBOS_READY` (bwrap default, unprivileged; docker alt). Stand-in BusyBox userspace seeded in a disposable overlay; canonical rootfs untouched |
+| Kernel / initramfs / bootloader | ❌ absent (B4 QEMU self-boot is the follow-on) |
+| Boot target decision | ✅ DECIDED 2026-08-25: Option B (container rootfs first) + container boot landed |
 | Image format / QEMU script | ❌ none yet |
 
 ---
@@ -160,11 +162,16 @@ A **first bootable VybOS image** milestone is reached when all of:
 1. **Boot target:** Option B (container/rootfs first — recommended) vs Option A
    (QEMU kernel+initramfs first)?
 2. **Init choice:** BusyBox/minimal init vs a vyb-driven PID 1 for the first
-   boot? (Signal; a vyb init is the showcase but more work.)
+   boot? A stand-in BusyBox POSIX `/init` (config-driven from the composed spec)
+   already boots to READY under `tools/vybos-run`; the question is whether the
+   real userspace init becomes vyb-driven (showcase) or stays minimal.
 3. **Staging for B1 before `mkdir`:** acceptable to use a `freedom { exec }`
    host-side staging fallback temporarily, or wait for the runtime `mkdir` RFE?
 4. **Stand-in validation** (shared with issue #1): OK to validate launcher +
    smoke plumbing against a tiny stand-in boot image now, before a real rootfs?
+   — DONE: `tools/vybos-run --test` validates the launcher against the
+   materialized container rootfs (stand-in BusyBox userspace); a real image
+   with VybOS's own userspace is still ahead.
 
 ---
 

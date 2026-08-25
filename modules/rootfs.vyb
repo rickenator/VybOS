@@ -38,6 +38,33 @@ header(name<String>)<String> -> {
     return "# === VybOS " + name + " ===\n"
 }
 
+// Bootable init for the container rootfs (stand-in BusyBox userspace). Prints a
+// hostname/version/system/service summary driven by the COMPOSED spec (not
+// hand-rolled), then a `VYBOS_READY=1` marker line that the launcher's --test
+// greps for. Pure: just returns the script text; the launcher runs it and the
+// busybox binary is seeded into a disposable overlay at boot time.
+share(all)
+init_script(spec<SystemSpec>)<String> -> {
+    s<String> = "#!/bin/sh\n"
+    s = s + "echo \"=== VybOS init (container rootfs; stand-in BusyBox userspace) ===\"\n"
+    s = s + "echo \"system  : " + spec.system + "\"\n"
+    s = s + "echo \"hostname: $(cat /etc/vyb-os/hostname 2>/dev/null)\"\n"
+    s = s + "echo \"version : $(cat /etc/vyb-os/version 2>/dev/null)\"\n"
+    s = s + "echo \"-- enabled services (stand-in start) --\"\n"
+    svcs<Vec<Service>> = spec.services
+    n<Int> = svcs.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            sv<Service> = svcs.get(i)
+            if (sv.enabled) {
+                s = s + "echo \"  " + sv.name + ": starting... " + sv.name + " (started)\"\n"
+            }
+        }
+    }
+    s = s + "echo \"VYBOS_READY=1\"\n"
+    return s
+}
+
 // Compute the rootfs files for a composed spec. Returns the ordered FileEntry
 // list (config first). Pure: no side effects.
 share(all)
@@ -60,5 +87,6 @@ rootfs_files(spec<SystemSpec>)<Vec<FileEntry>> -> {
         }
     }
     files.push(FileEntry { path = "/etc/vyb-os/services.sh", content = sh })
+    files.push(FileEntry { path = "/init", content = init_script(spec) })
     return files
 }
