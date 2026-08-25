@@ -84,32 +84,41 @@ Paths below are godzilla-relative (`~/Projects`). On apex the compiler repo
 lives at `/usr/export/rick/Projects/Vyb` instead.
 
 ```sh
-# Prerequisite: Vyb compiler JIT binary
-#   ~/Projects/Vyb  →  cmake --build build  →  build/vyb
+# Prerequisite: Vyb compiler JIT binary — use the ISOLATED vyb-os worktree
+# toolchain (stable snapshot; insulated from impl-agent churn on main):
+#   ~/Projects/Vyb-vybos  →  cmake --build build  →  build/vyb
+#   (created via `git -C ~/Projects/Vyb worktree add -b vyb-os-stable \
+#     ~/Projects/Vyb-vybos` pinned to the fixed commit)
+
+VYBU=/home/rick/Projects/Vyb-vybos    # the isolated worktree
+export VYB_STDLIB=$VYBU/stdlib        # stable stdlib snapshot
+VYB=$VYBU/build/vyb
 
 # M0 — JIT-evaluate the machine declaration through the framework:
 cd ~/Projects/VybOS
-VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
-  /home/rick/Projects/Vyb/build/vyb config/system.vyb --module-path modules
+$VYB config/system.vyb --module-path modules
 
 # M1 — realise derivations: real fetch -> content-addressed store (needs network):
 mkdir -p store   # store/ is gitignored (build cache)
-VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
-  /home/rick/Projects/Vyb/build/vyb build/build-store.vyb --module-path modules
+$VYB build/build-store.vyb --module-path modules
 
 # M2 step — realise a real dependency CLOSURE with .drv-style .meta.json:
-VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
-  /home/rick/Projects/Vyb/build/vyb build/build-closure.vyb --module-path modules
+$VYB build/build-closure.vyb --module-path modules
 
 # M2 — generation store + rollback bookkeeping (pure Vyb, offline):
 mkdir -p generations   # runtime state (gitignored)
-VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
-  /home/rick/Projects/Vyb/build/vyb build/generations.vyb --module-path modules
+$VYB build/generations.vyb --module-path modules
 
 # M2 — real package source-tree realization (archive inflate + tar extract):
 bash build/samples/make_samples.sh      # build the deterministic source tar.gz
-VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
-  /home/rick/Projects/Vyb/build/vyb build/build-package.vyb --module-path modules
+$VYB build/build-package.vyb --module-path modules
+
+# M2 — URL parser acceptance vectors (pure Vyb, offline):
+$VYB build/build-url.vyb --module-path modules
+
+# M2 — URL-driven realizer: parse ONE url -> fetch bytes -> realize the tree
+#   (serves the sample tarball over a local HTTP server; edit url in main()):
+$VYB build/build-package-url.vyb --module-path modules
 ```
 
 ## Source Of Truth
@@ -127,9 +136,9 @@ VYB_STDLIB=/home/rick/Projects/Vyb/stdlib \
 - [x] M2: real dependency-closure materialization + `.drv`-style metadata (`build/build-closure.vyb`).
 - [x] M2: generation store + rollback bookkeeping (`build/generations.vyb`).
 - [x] M2: real package **source-tree** realization via stdlib `archive` (`build/build-package.vyb`).
-- [~] M2: nested store still waits on the runtime gaining `mkdir` (RFE-M2 #1); the tree realizer flattens member paths into the flat store for now.
+- [~] M2: nested store still waits on the runtime gaining `mkdir` (RFE-M2 #1); the tree realizer flattens member paths for now.
+- [~] M2: URL→(host,port,path) parsing done **framework-side** (`modules/url.vyb` + `build/build-url.vyb` acceptance vectors, `build/build-package-url.vyb` URL-driven realizer); a stdlib `url` module stays an impl-agent RFE (Item 4) — VybOS no longer waits on it.
 - [x] Real crypto digest / HTTPS-fetch gaps scoped — `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) drafted for the Vyb implementation agent; gzip+tar **extraction** landed in the stdlib `archive` module; HTTPS itself already works.
-- [ ] URL→(host,port,path) parsing in stdlib (Item 4 of `doc/RFE-M2.md`); when landed, point `build/build-package.vyb` at `https_get_full` bytes instead of a local tar.gz.
 - [x] Generations/profiles + rollback bookkeeping (atomic symlink switch still awaits the `rename`/`symlink` RFE — current pointer is a file rewrite).
 - [ ] Define the module composition convention (how `modules/*` combine).
 - [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.

@@ -58,9 +58,20 @@ package source-tree realization from a gzipped POSIX tar.
   content-addressed by real bytes into the flat store + tree manifest.
 
 Remaining M2 pieces: nested store (needs the `mkdir` RFE; the tree realizer
-flattens member paths for now), and URL→(host,port,path) parsing so
-`build/build-package.vyb` can point at `https_get_full` bytes instead of a
-local tar.gz. A Vyb compiler regression hit mid-M2 (uncommitted deep-copy
+flattens member paths for now). URL→(host,port,path) parsing is done
+framework-side: `modules/url.vyb` (`url_split`) + `build/build-url.vyb` (RFE-M2
+Item 4 acceptance vectors, offline) and `build/build-package-url.vyb` — a
+URL-driven realizer that parses ONE url string, selects the http client by
+scheme, fetches real bytes, and realizes the tree (byte-verified +
+reproducible). A Vyb compiler regression hit mid-M2 (uncommitted deep-copy
 edits double-freed the graph code) — escalated as `rickenator/Vyb#184`, fixed
-upstream (`7a4b4a8`), toolchain rebound here, all slices re-verified. Blockers
-listed in `doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.
+upstream (`7a4b4a8`), all slices re-verified. Blockers listed in
+`doc/STORE-LAYOUT.md` → `doc/NIXOS-BORROWINGS.md`.
+
+**Toolchain isolation (2026-08-24)**: VybOS now builds/runs against an
+**isolated Vyb worktree** — `~/Projects/Vyb-vybos` (branch `vyb-os-stable`,
+pinned to the fixed commit) — created via
+`git -C ~/Projects/Vyb worktree add -b vyb-os-stable ~/Projects/Vyb-vybos`.
+This insulates VybOS from impl-agent churn on the main Vyb checkout; the main
+repo stays for the implementation agent. Run commands updated in README/AGENTS.
+

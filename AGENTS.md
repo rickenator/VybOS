@@ -22,13 +22,16 @@ touched only by its implementation agent.
 
 ## Commands
 
+VybOS uses an **isolated Vyb worktree** (stable toolchain, insulated from
+impl-agent churn on the main checkout):
+
 ```sh
-# Vyb prerequisite (Vyb repo, not this one):
-cd /usr/export/rick/Projects/Vyb && cmake --build build
-# run a Vyb program via the JIT:
-/usr/export/rick/Projects/Vyb/build/vyb path/to/file.vyb
+# Vyb prerequisite — build the isolated vyb-os worktree (stable snapshot):
+cd ~/Projects/Vyb-vybos && cmake --build build       # -> build/vyb
+# run a Vyb program via the JIT (inside VybOS):
+VYB_STDLIB=~/Projects/Vyb-vybos/stdlib ~/Projects/Vyb-vybos/build/vyb path/to/file.vyb
 # this repo (when the framework exists):
-#   vyb --jit build/system.vyb
+#   VYB_STDLIB=~/Projects/Vyb-vybos/stdlib ~/Projects/Vyb-vybos/build/vyb build/system.vyb
 ```
 
 ## Safety Gates
