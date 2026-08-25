@@ -58,6 +58,11 @@ mirroring Nix derivations.
      archive lands in `src/.libs/`. Source via `www.mpfr.org` (a host the
      verified TLS client handles; some GNU hosts hang it — a client robustness
      observation).
+   - **1d. LANDED — mpc (T0c)**: `build/build-derive-mpc.vyb` builds `libmpc.a`
+     against BOTH gmp + mpfr dependencies (all built into a scratch prefix; the
+     store-input DAG remains a promoted follow-on). Completes the GNU lib trio
+     that gcc links. Source via `www.multiprecision.org` (`.tar.gz`; archive
+     lands in `src/.libs/libmpc.a`).
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via

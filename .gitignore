@@ -21,3 +21,4 @@ build/derive-real-out*/
 build/derive-comp-out*/
 build/derive-gmp-out*/
 build/derive-mpfr-out*/
+build/derive-mpc-out*/
