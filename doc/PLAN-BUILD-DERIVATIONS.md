@@ -38,10 +38,15 @@ mirroring Nix derivations.
    (a `freedom exec` of the host toolchain is NOT a derived toolchain). A real
    VybOS `gcc`/`binutils` (or musl-based) toolchain, itself built from source,
    is the honest prerequisite for self-hosting builds. (Large; parallel-track.)
-2. **Real fetched source** — build a genuinely fetched upstream source tarball
-   (e.g. busybox `.tar.gz` via the existing verified-TLS fetch → inflate →
-   build recipe), replacing the repo-local sample. busybox is the right
-   mid-size target (static, self-contained).
+2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
+   fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
+   TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via
+   a gated recipe (`tar xjf` → `make defconfig` → disable the gcc-13-broken `tc`
+   applet by setting `CONFIG_TC` not-set → `make -j4`). The BUILT busybox ELF
+   (1.06MB, pie) is content-addressed as `.bin` + `.meta.json`. Runs.
+   NOTE: busybox.net ships `.tar.bz2`; the DERIVATION stores the fetched tarball
+   and the build step unpacks it with host `tar` (Vyb's archive module handles
+   gzip — a bzip2 inflate is an impl-agent RFE if we want Vyb-side extraction).
 3. **Linux kernel as the flagship** — kernel `.tar.*` source → toolchain →
    config (`make defconfig`-style) → `bzImage`. This is what turns the QEMU
    boot (currently a *fetched* Alpine `vmlinuz`) into a *derived* VybOS kernel,
@@ -53,6 +58,12 @@ mirroring Nix derivations.
   `freedom`, like the mkdir fallback). A real build sandbox (e.g. bubblewrap —
   already used by `tools/vybos-run`) with no network + ro-bind toolchain is the
   follow-on for isolation/reproducibility.
+- **Not byte-reproducible yet (busybox)**: the default busybox build is
+  byte-deterministic for a fixed path (`make clean && make` reproduces the SHA)
+  but NOT across rebuilds/paths without reprobuild flags (`SOURCE_DATE_EPOCH`,
+  `-frandom-seed`, `-fdebug-prefix-map`). hello-vyb certifies the DERIVATION
+  machinery is byte-deterministic for a deterministic compile; hardening busybox
+  (and later the kernel) for full reprobuilds is a follow-on.
 - **Stand-in hash**: FNV-1a content address (B2 in PLAN_BOOTABLE_IMAGE wants
   SHA-256 once the stdlib has it).
 - **Flat store**: single-file `.bin`/`.src`; nested dirs blocked on the `mkdir`

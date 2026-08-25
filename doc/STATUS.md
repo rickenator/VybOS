@@ -85,13 +85,18 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
      `vmlinuz-virt`, cached in `build/kernel-cache/`) — reaches `VYBOS_READY` on
      the serial console (TCG; no /dev/kvm here). Requires `/init` `+x` for
      kernel execve. See PLAN_BOOTABLE_IMAGE.
-10. **BUILD-STAGE derivation** — `build/build-derive.vyb`: the missing build
-    step (derivations were fetch-only). Realize source → gated build action
-    (`freedom{exec_run}` recipe) → content-address the OUTPUT `.bin` + `.meta.json`
-    (sourceUrl/sourceContentHash/buildRecipe/outputContentHash). Proven on
-    `build/samples/hello-vyb/main.c`: static ELF output, reproducible
-    (`outputContentHash` identical across two builds), runs. Foundation for
-    toolchain/busybox/Linux derivations + issue #4's `build.plan`.
+10. **BUILD-STAGE derivation** — the missing build step (derivations were
+    fetch-only). Realize source → gated build action (`freedom{exec_run}`
+    recipe) → content-address the OUTPUT `.bin` + `.meta.json`
+    (sourceUrl/sourceContentHash/buildRecipe/outputContentHash).
+    - `build/build-derive.vyb` (spike) on `build/samples/hello-vyb/main.c`:
+      static ELF, reproducible (`outputContentHash` identical across two
+      builds), runs.
+    - `build/build-derive-real.vyb` (real fetched source): **busybox 1.36.1**
+      fetched from busybox.net over verified TLS → source realized → BUILT
+      (recipe disables the gcc-13-broken `tc` applet) → busybox ELF (1.06MB)
+      content-addressed + `.meta.json`, runs.
+    Foundation for toolchain/Linux derivations + issue #4's `build.plan`.
     See doc/PLAN-BUILD-DERIVATIONS.md.
 
 ## 3. GitHub issues filed against Vyb (this session)
@@ -154,11 +159,11 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       `enabled`; `select`-validated dep kinds; possibly an `options`-style
       carrier struct per module.
 - [ ] **Build-stage derivations → kernels-from-source** (see
-      doc/PLAN-BUILD-DERIVATIONS.md): spike landed (hello-vyb, reproducible
-      output content-address). Next: toolchain-as-derivation, real fetched
-      source (busybox), then Linux kernel as the flagship — turning the fetched
-      QEMU vmlinuz into a *derived* VybOS kernel and giving issue #4's
-      `build.plan` a real `linux-<ver>-vyb` package to reference.
+      doc/PLAN-BUILD-DERIVATIONS.md): spike (hello-vyb, byte-reproducible) AND
+      real fetched source (busybox 1.36.1 → built ELF, content-addressed) landed.
+      Next: toolchain-as-derivation, then Linux kernel as the flagship — turning
+      the fetched QEMU vmlinuz into a *derived* VybOS kernel and giving issue
+      #4's `build.plan` a real `linux-<ver>-vyb` package to reference.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 
