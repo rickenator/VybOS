@@ -1,0 +1,119 @@
+// build-derive-gmp.vyb — VybOS TOOLCHAIN T0a: the first GNU library as a
+// build-stage derivation. gmp (libgmp — arbitrary-precision arithmetic) is the
+// first piece of the bootstrapped toolchain: gcc links against it (via mpfr/mpc).
+//
+// Pipeline (all vybey + a gated host build action):
+//   fetch GNU gmp source over verified TLS (gmplib.org, .tar.xz)
+//   realize the SOURCE (.src) content-addressed
+//   build: tar xJf -> ./configure -> make    (host cc; produces libgmp.a + gmp.h)
+//   content-address the BUILT libgmp.a (.bin) + .drv-style .meta.json
+//
+// This is the first step of the broken-up toolchain:
+//   gmp -> mpfr -> mpc -> binutils -> gcc (C-only) -> Linux kernel.
+// gmp itself has no build deps beyond a C compiler. Archive is XZ (Vyb's
+// archive module is gzip/tar; the build step unpacks with host tar).
+// Flat store, binary-safe String IO, inclusive ranges.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import http::{HttpResponse}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+// ar archive global magic "!<arch>\n" = '!' '<' 'a' 'r' 'c' 'h' '>' LF
+is_ar_archive(b<String>)<Bool> -> {
+    return b.len() >= 8 && b.char_at(0) == 33 && b.char_at(1) == 60 &&
+           b.char_at(2) == 97 && b.char_at(3) == 114 && b.char_at(4) == 99 &&
+           b.char_at(5) == 104 && b.char_at(6) == 62 && b.char_at(7) == 10
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    name<String> = "gmp"
+    ver<String> = "6.3.0"
+    srcUrl<String> = "https://gmplib.org/download/gmp/gmp-" + ver + ".tar.xz"
+    buildRoot<String> = "build/derive-gmp-out"
+    dir<String> = buildRoot + "/gmp-" + ver
+
+    println("=== VybOS TOOLCHAIN T0a: GNU gmp as a build-stage derivation ===\n")
+    fails<Int> = 0
+
+    // 1. fetch the real source over verified TLS.
+    u<UrlSplit> = url_split(srcUrl)
+    r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+    fails = fails + check(r.status == 200, "fetched gmp source over verified TLS (" + r.status.to_string() + ")")
+    if (r.status != 200) { println("  abort: fetch failed"); return 1 }
+    tarball<String> = r.body
+    fails = fails + check(tarball.len() > 1000000, "gmp source tarball non-trivial (" + tarball.len().to_string() + " bytes)")
+
+    // 2. realize the SOURCE (content-addressed .src).
+    srcCA<Int> = content_hash(tarball, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    fails = fails + check(write_flat(sSrc, tarball), "gmp source content-addressed into store (.src)")
+    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+
+    // 3. build (host cc): unpack xz -> configure -> make.
+    rec<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot +
+        "\" && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\"" +
+        " && cd \"" + dir + "\" && ./configure --disable-shared" +
+        " && make -j4"
+    fails = fails + check(run(rec) == 0, "gmp built (configure + make, host cc)")
+
+    // 4. content-address the BUILT static library + header.
+    lib<String> = read_flat(dir + "/.libs/libgmp.a")
+    fails = fails + check(lib.len() > 100000, "built libgmp.a non-trivial (" + lib.len().to_string() + " bytes)")
+    fails = fails + check(is_ar_archive(lib), "libgmp.a is a valid ar archive")
+    outCA<Int> = content_hash(lib, name, ver)
+    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + ".bin"
+    fails = fails + check(write_flat(oBin, lib), "built libgmp.a content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+
+    hdr<String> = read_flat(dir + "/gmp.h")
+    fails = fails + check(hdr.len() > 1000, "gmp.h header produced (" + hdr.len().to_string() + " bytes)")
+    hCA<Int> = content_hash(hdr, name, "header")
+    write_flat(storeDir + "/" + hCA.to_string() + "-" + name + "-" + ver + ".h", hdr)
+
+    // 5. metadata
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
+        ", \"buildRecipe\": \"configure --disable-shared && make\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + ".bin\"}"
+    mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
+    println("  output .bin : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  meta        : " + mPath)
+    println("")
+    sum<String> = "ALL GMP TOOLCHAIN-DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

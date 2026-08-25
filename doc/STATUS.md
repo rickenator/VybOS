@@ -104,6 +104,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     into GEN-2** (roll-your-own bootstrap). Both generations are content-
     addressed ELF, both compile real programs (the GEN-2-built program runs).
     See doc/PLAN-BUILD-DERIVATIONS §1a.
+12. **TOOLCHAIN T0a (gmp)** — `build/build-derive-gmp.vyb`: the first GNU lib as
+    a build-stage derivation. Fetches GNU gmp, realizes source, builds
+    `libgmp.a` (configure + make), content-addresses the built static archive
+    (valid ar) + `.meta.json`. First piece of the BROKEN-UP toolchain:
+    **gmp → mpfr → mpc → binutils → gcc (C-only) → Linux kernel**. (Release 0.1
+    = **"Brutal Dogfood"**; see doc/RELEASE-BRUTAL-DOGFOOD.md.)
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -166,11 +172,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       carrier struct per module.
 - [ ] **Build-stage derivations → kernels-from-source** (see
       doc/PLAN-BUILD-DERIVATIONS.md): landed — hello-vyb (byte-reproducible),
-      busybox 1.36.1 (real fetched source → built ELF), and a SELF-HOSTING C
-      compiler bootstrap (chibicc: GEN-1 compiler → GEN-2 via self-recompile).
-      Next: full gcc/binutils toolchain-as-derivation, then Linux kernel as the
-      flagship — turning the fetched QEMU vmlinuz into a *derived* VybOS kernel
-      and giving issue #4's `build.plan` a real `linux-<ver>-vyb` package.
+      busybox 1.36.1 (real fetched source → built ELF), a SELF-HOSTING C
+      compiler bootstrap (chibicc: GEN-1 → GEN-2 via self-recompile), and
+      toolchain T0a (gmp → libgmp.a). NEXT (broken up, per release 0.1 "Brutal
+      Dogfood"): mpfr → mpc → binutils → gcc (C-only) → Linux kernel — turning
+      the fetched QEMU vmlinuz into a *derived* VybOS kernel and giving issue
+      #4's `build.plan` a real `linux-<ver>-vyb` package.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 

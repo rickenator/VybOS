@@ -71,7 +71,7 @@ share(all)
 rootfs_files(spec<SystemSpec>)<Vec<FileEntry>> -> {
     files<Vec<FileEntry>> = Vec()
     files.push(FileEntry { path = "/etc/vyb-os/system.json", content = spec.to_string() })
-    files.push(FileEntry { path = "/etc/vyb-os/version", content = "0-b1" })
+    files.push(FileEntry { path = "/etc/vyb-os/version", content = "0.1-brutal-dogfood" })
     files.push(FileEntry { path = "/etc/vyb-os/hostname", content = spec.hostname + "\n" })
 
     // service launcher: one line per ENABLED service

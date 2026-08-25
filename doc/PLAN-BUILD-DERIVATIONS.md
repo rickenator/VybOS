@@ -46,6 +46,11 @@ mirroring Nix derivations.
      program runs). This is the roll-your-own compiler bootstrap — "compilers
      are not magic" — and proves a compiler-in-a-derivation. Full gcc/binutils
      derivation remains the larger follow-on.
+   - **1b. LANDED — gmp (T0a)**: `build/build-derive-gmp.vyb` builds the first
+     GNU library (arbitrary-precision `libgmp.a`) as a build-stage derivation —
+     bootstraps the broken-up toolchain: **gmp → mpfr → mpc → binutils → gcc
+     (C-only) → Linux kernel**. gmp has no build deps beyond a C compiler;
+     archive is `.tar.xz` (build step unpacks with host tar).
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via

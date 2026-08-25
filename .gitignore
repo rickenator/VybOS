@@ -19,3 +19,4 @@ build/kernel-cache/
 build/derive-out*/
 build/derive-real-out*/
 build/derive-comp-out*/
+build/derive-gmp-out*/
