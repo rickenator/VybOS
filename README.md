@@ -104,6 +104,9 @@ $VYB build/build-compose.vyb --module-path modules
 # Compose -> validate -> transition plan (the `vyb system apply` dry-run):
 $VYB build/build-apply.vyb --module-path modules
 
+# Compose -> plan -> EXECUTE (realise the desired closure into the store):
+$VYB build/build-exec.vyb --module-path modules   # needs network (httpbin)
+
 # M1 — realise derivations: real fetch -> content-addressed store (needs network):
 mkdir -p store   # store/ is gitignored (build cache)
 $VYB build/build-store.vyb --module-path modules
@@ -145,6 +148,7 @@ $VYB build/build-package-url.vyb --module-path modules
 - [~] M2: nested store still waits on the runtime gaining `mkdir` (RFE-M2 #1); the tree realizer flattens member paths for now.
 - [~] M2: URL→(host,port,path) parsing done **framework-side** (`modules/url.vyb` + `build/build-url.vyb` acceptance vectors, `build/build-package-url.vyb` URL-driven realizer); a stdlib `url` module stays an impl-agent RFE (Item 4) — VybOS no longer waits on it.
 - [x] Module-composition convention: how `modules/*` combine — `modules/compose.vyb` (`Module`, `compose`, `compose_issue` gate) + example modules (`sshd`, `getty`, `vim`) + self-test (`build/build-compose.vyb`, 15 invariants) + `doc/COMPOSITION.md`; `config/system.vyb` now assembles the machine by folding modules.
+- [x] Plan execution: shared realizer core `modules/realize.vyb` + `build/build-exec.vyb` (compose → plan → realise store objects; `build-apply.vyb` is the dry-run). Apply dry-run + execution both PASS on the isolated toolchain.
 - [x] Real crypto digest / HTTPS-fetch gaps scoped — `doc/RFE-M2.md` (mkdir, SHA-256, tarball, URL parser) drafted for the Vyb implementation agent; gzip+tar **extraction** landed in the stdlib `archive` module; HTTPS itself already works.
 - [x] Generations/profiles + rollback bookkeeping (atomic symlink switch still awaits the `rename`/`symlink` RFE — current pointer is a file rewrite).
 - [ ] Pick a boot target: kernel + initramfs on QEMU vs. a container rootfs first.

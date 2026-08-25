@@ -116,8 +116,16 @@ is already wired into the transition pipeline: `build/build-apply.vyb` composes
 a *current* and *desired* machine from modules, gates them with
 `compose_issue`, and produces a deterministic `plan_lines()` diff
 (install/keep/remove) keyed by closure-aware store identities — the `vyb
-system apply` dry-run. Next natural step: teach the realizer
-(`build/build-closure.vyb`) to execute that plan against a module-composed
-`SystemSpec` (it already validates via `plan.resolve_issue`); the convention,
-the graph framework, and the planner share the same `plan.vyb` types by
-construction, so this is a wiring change, not a new model.
+system apply` dry-run. The execution half is `modules/realize.vyb` — the
+shared realizer core (promoted out of `build/build-closure.vyb`): closure
+identity (`real_table`), topological order, and the fetch → content-hash →
+write `.src` + `.drv`-style `.meta.json` loop, plus `closure_real(spec, name)`
+for verifying expected store paths. `build/build-exec.vyb` drives it against a
+module-composed desired spec (compose → gate → plan → realise); all execution,
+apply, and composition invariants PASS on the isolated Vyb-vybos toolchain.
+
+Next natural step: teach the *real* URL-driven fetch path (build-package-url)
+to serve a module-composed spec, so the realizer can realise genuine HTTPS
+sources (github tarballs per the RFE-M2 testing note) instead of the
+deterministic local mirror — a wiring change, since everything shares the same
+`plan.vyb` / `realize.vyb` types.

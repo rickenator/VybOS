@@ -80,7 +80,12 @@ declaration. The convention is wired into the transition pipeline via
 `build/build-apply.vyb` (compose `cur`/`des` → `compose_issue` gate → `spec_digest`
 → deterministic `plan_lines` install/keep/remove — the `vyb system apply`
 dry-run), with an added `nginx` example module for a real install/remove
-delta. All 10 apply invariants PASS on the isolated toolchain.
+delta. All 10 apply invariants PASS on the isolated toolchain. The execution
+half is `modules/realize.vyb` (shared realizer core promoted out of
+build-closure: closure identity + topological fetch → content-hash → write
+`.src` + `.drv`-style `.meta.json`) driven by `build/build-exec.vyb`, which
+composes a module-built desired spec and realises it; all 11 execute
+invariants PASS.
 
 **Toolchain isolation (2026-08-24)**: VybOS now builds/runs against an
 **isolated Vyb worktree** — `~/Projects/Vyb-vybos` (branch `vyb-os-stable`,

@@ -1,0 +1,176 @@
+// realize.vyb — VybOS shared realization core (the plan-execution engine).
+//
+// SCOPE: the code that turns a SystemSpec's dependency closure into realized
+// store objects. Promoted out of build/build-closure.vyb so every realizer
+// shares ONE audited implementation (same move as the graph framework going
+// into modules/plan.vyb): closure identity, topological order, and the
+// fetch -> content-hash -> write .src + .drv-style .meta.json loop all live
+// here, and an entry just supplies a spec and a store dir.
+//
+// This is the execution half of `vyb system apply`: plan_lines() (pure,
+// modules/plan.vyb) says what SHOULD change; realize_spec() performs the
+// realisation for a desired spec, in dependency order, gated by the caller's
+// validation check.
+//
+// Determinism note: like build-closure before it, the source bodies here are
+// served from deterministic httpbin endpoints keyed by package name (no
+// per-run variance), so store paths are reproducible across runs. To realise
+// a package from a real URL, an entry overrides mirror_src/host/path (the
+// URL-driven realizer in build-package-url.vyb shows that path).
+//
+// NOTE: Vyb ranges are INCLUSIVE; iterate 0..len-1 and guard empties.
+import collections
+import http
+import io
+import vybos::{content_hash}
+import plan::{Pkg, Dep, SystemSpec, RealRec,
+              resolve, real_table, real_of, find_pkg,
+              order_count, token_kth}
+
+// ---- deterministic source mirror (by package name) ----
+// The demo realizer realises against stable httpbin bodies so store paths are
+// reproducible. A name not listed falls back to httpbin /html.
+share(all)
+mirror_host(name<String>)<String> -> {
+    return select(name) -> {
+        {"openssh"} -> "httpbin.org",
+        {"vim"}    -> "httpbin.org",
+        {"zlib"}   -> "httpbin.org",
+        {"gzip"}   -> "httpbin.org",
+        {"openssl"}-> "httpbin.org",
+        {"nginx"}  -> "httpbin.org",
+        ?          -> "httpbin.org"
+    }
+}
+
+share(all)
+mirror_path(name<String>)<String> -> {
+    return select(name) -> {
+        {"openssh"} -> "/html",
+        {"vim"}    -> "/robots.txt",
+        {"zlib"}   -> "/robots.txt",
+        {"gzip"}   -> "/html",
+        {"openssl"}-> "/base64/aGVsbG8gdnlib3M=",
+        {"nginx"}  -> "/html",
+        ?          -> "/html"
+    }
+}
+
+share(all)
+mirror_src(name<String>)<String> -> {
+    return "http://" + mirror_host(name) + mirror_path(name)
+}
+
+// ---- metadata & write helpers (promoted from build-closure.vyb) ----
+
+// version of a named pkg (for store-path strings), or "" if absent.
+share(all)
+version_of(pkgs<Vec<Pkg>>, name<String>)<String> -> {
+    i<Int> = find_pkg(pkgs, name)
+    if (i >= 0) { return pkgs.get(i).version }
+    return ""
+}
+
+// Build the `inputs` JSON object (direct dep -> kind + closure store path)
+// for one derivation, from its own dep list and the closure rec table.
+share(all)
+meta_inputs(pkgs<Vec<Pkg>>, recs<Vec<RealRec>>, deps<Vec<Dep>>)<String> -> {
+    s<String> = "{"
+    m<Int> = deps.len()
+    if (m > 0) {
+        for (k in 0..m-1) {
+            dk<Dep> = deps.get(k)
+            dr<Int> = real_of(recs, dk.name)
+            dv<String> = version_of(pkgs, dk.name)
+            if (k > 0) { s = s + "," }
+            s = s + "\"" + dk.name + "\": {\"kind\": \"" + dk.kind +
+                "\", \"storePath\": \"/vyb/store/" + dr.to_string() + "-" +
+                dk.name + "-" + dv + "\"}"
+        }
+    }
+    s = s + "}"
+    return s
+}
+
+// write source + .meta.json for one realised derivation (flat store: two
+// files, no dirs to create). Returns true on both writes succeeding.
+share(all)
+realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<Int>,
+            real<Int>, inputsJson<String>)<Bool> -> {
+    base<String> = storeDir + "/" + real.to_string() + "-" + pkg.name + "-" + pkg.version
+    // source blob
+    okS<Bool> = false
+    match (open_write(base + ".src")) {
+        w -> { n<Int> = write_str(w, bytes) else -1; close(w); okS = (n >= 0) }
+        ? -> { okS = false }
+    }
+    if (!okS) { return false }
+    // .drv-style metadata
+    meta<String> = "{\"name\": \"" + pkg.name +
+        "\", \"version\": \"" + pkg.version +
+        "\", \"source\": \"" + pkg.source +
+        "\", \"contentHash\": " + contentHash.to_string() +
+        ", \"closureReal\": " + real.to_string() +
+        ", \"storePath\": \"/vyb/store/" + real.to_string() + "-" + pkg.name + "-" + pkg.version +
+        "\", \"inputs\": " + inputsJson + "}"
+    okM<Bool> = false
+    match (open_write(base + ".meta.json")) {
+        w -> { n2<Int> = write_str(w, meta) else -1; close(w); okM = (n2 >= 0) }
+        ? -> { okM = false }
+    }
+    return okM
+}
+
+// Result carrier for a realise_spec() pass.
+share(all)
+struct RealizeResult { realised<Int>, failed<Int>, order<String> }
+
+// closure-aware realisation identity of a named pkg (real_table lookup), for
+// entry programs to build/verify expected store paths. 0 if absent.
+share(all)
+closure_real(spec<SystemSpec>, name<String>)<Int> -> {
+    recs<Vec<RealRec>> = real_table(spec.pkgs)
+    return real_of(recs, name)
+}
+
+// Realise every pkg of `spec` into `storeDir`, in dependency (topological)
+// order, via the deterministic mirror. Realisation identity is closure-aware
+// (real_table) so a transitive change bumps the dependent's paths. Returns
+// realised/failed counts + the order. The caller gates with a validation
+// check (compose_issue / resolve_issue) BEFORE calling this.
+share(all)
+realize_spec(storeDir<String>, spec<SystemSpec>)<RealizeResult> -> {
+    pkgs<Vec<Pkg>> = spec.pkgs
+    order<String> = resolve(pkgs)
+    recs<Vec<RealRec>> = real_table(pkgs)
+    occ<Int> = order_count(order)
+    realised<Int> = 0
+    failed<Int> = 0
+    if (occ > 0) {
+        for (k in 0..occ-1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(pkgs, nm)
+            pkg<Pkg> = pkgs.get(i)
+            real<Int> = real_of(recs, nm)
+            match (http_get_full(mirror_host(nm), 80, mirror_path(nm))) {
+                resp -> {
+                    if (resp.status != 200) {
+                        failed = failed + 1
+                    } else {
+                        bytes<String> = resp.body
+                        ch<Int> = content_hash(bytes, nm, pkg.version)
+                        deps<Vec<Dep>> = pkg.deps
+                        ij<String> = meta_inputs(pkgs, recs, deps)
+                        if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
+                            realised = realised + 1
+                        } else {
+                            failed = failed + 1
+                        }
+                    }
+                }
+                ? -> { failed = failed + 1 }
+            }
+        }
+    }
+    return RealizeResult { realised = realised, failed = failed, order = order }
+}

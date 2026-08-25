@@ -1,0 +1,137 @@
+// build-exec.vyb — VybOS: EXECUTE the apply plan against a module-composed
+// spec (the execution half of `vyb system apply`).
+//
+// build-apply.vyb showed the PURE side (dry-run: compose -> gate -> digest ->
+// plan_lines). This slice runs the next step: take the module-composed
+// desired SystemSpec, and REALISE it — turn the plan's install set into
+// actual store objects (.src + .drv-style .meta.json per derivation) using the
+// shared realization core (modules/realize.vyb), in dependency order.
+//
+// Pipeline:
+//   config (modules sshd/getty/vim + nginx) -> compose() -> SystemSpec
+//   -> compose_issue gate (no side effects before this)
+//   -> plan_lines(cur, des)  (what WOULD change — the dry-run)
+//   -> realize_spec(storeDir, des)  (EXECUTE: materialise the desired closure)
+//   -> verify realised accounts match the plan's install set.
+//
+// Deterministic: the realizer fetches stable httpbin bodies keyed by package
+// name, so store paths are reproducible across runs (same inputs -> same
+// content addresses). The .meta.json records each derivation's real
+// closure-aware identity + its input closure, exactly like build-closure.
+import collections
+import http
+import io
+import io::{open_write, write_str, close, open_read, read_all}
+import vybos::{content_hash}
+import compose::{Module, blank_system, compose, compose_issue}
+import plan::{Pkg, Dep, SystemSpec, RealRec, spec_digest, plan_lines, resolve,
+              real_table, real_of, find_pkg, order_count, token_kth}
+import realize::{realize_spec, RealizeResult, closure_real}
+import sshd::{sshd}
+import getty::{getty}
+import vim::{vim}
+import nginx::{nginx}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// naive substring test (module String has no visible .n on this build).
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+// does a plan line mention `name` as an install? (i.e. "install <name>\n")
+plan_installs(plan<String>, name<String>)<Bool> -> {
+    return substr_has(plan, "install " + name + "\n")
+}
+
+// does a plan line mention `name` as kept?
+plan_keeps(plan<String>, name<String>)<Bool> -> {
+    return substr_has(plan, "keep " + name + "\n")
+}
+
+// read a whole file ("" on failure/absence).
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+// assemble a SystemSpec from an arbitrary enabled/disabled module set.
+assemble(sshdOn<Bool>, gettyOn<Bool>, vimOn<Bool>, nginxOn<Bool>)<SystemSpec> -> {
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(sshdOn))
+    mods.push(getty(gettyOn))
+    mods.push(vim(vimOn))
+    mods.push(nginx(nginxOn))
+    return compose(blank_system("x86_64-linux", "vybos-exec"), mods)
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    fprintf_ok<Bool> = false
+    println("=== VybOS: module-composed apply EXECUTION (plan -> realised store) ===\n")
+    fails<Int> = 0
+
+    // cur: sshd + getty + vim. des: + nginx (an install transition to run).
+    cur<SystemSpec> = assemble(true, true, true, false)
+    des<SystemSpec> = assemble(true, true, true, true)
+
+    // 1. gate before any side effect.
+    issue<String> = compose_issue(des)
+    fails = fails + check(issue == "", "desired spec composes clean (gate pass)")
+
+    // 2. dry-run plan (what SHOULD change) — the pure side, recomputed here.
+    plan<String> = plan_lines(cur, des)
+    fails = fails + check(plan_installs(plan, "nginx"),   "dry-run says install nginx")
+    fails = fails + check(plan_keeps(plan, "openssh"),    "dry-run says keep openssh")
+    fails = fails + check(plan_keeps(plan, "vim"),        "dry-run says keep vim")
+    println("  --- dry-run plan (cur -> des) ---")
+    println(plan)
+
+    // 3. EXECUTE: realise the desired closure into the store.
+    //    des has 3 pkgs (openssh, vim, nginx); all should realise clean.
+    res<RealizeResult> = realize_spec(storeDir, des)
+    fails = fails + check(res.failed == 0, "all desired pkgs realise with no failures")
+    fails = fails + check(res.realised == 3, "exactly the 3 desired pkgs realised (openssh, vim, nginx)")
+    fails = fails + check(des.pkgs.len() == 3, "desired spec really holds 3 packages")
+
+    // 4. on-disk spot-check: the nginx .meta.json + .src land where the
+    //    closure-aware identity says they should.
+    nreal<Int> = closure_real(des, "nginx")
+    npath<String> = storeDir + "/" + nreal.to_string() + "-nginx-1.26.2.meta.json"
+    nsrc<String> = storeDir + "/" + nreal.to_string() + "-nginx-1.26.2.src"
+    fails = fails + check(nreal > 0, "nginx has a positive closure-real identity")
+    rawN<String> = read_flat(npath)
+    fails = fails + check(substr_has(rawN, "\"name\": \"nginx\""), "nginx .meta.json exists on disk")
+    fails = fails + check(substr_has(rawN, "\"closureReal\": " + nreal.to_string()), "meta records the closure-aware real")
+    fails = fails + check(read_flat(nsrc).len() > 0, "nginx .src blob exists on disk")
+
+    println("")
+    println("  realised=" + res.realised.to_string() + " failed=" + res.failed.to_string())
+    println("  topological order: " + res.order)
+    println("  store dir: " + storeDir + "/  (source + .meta.json per derivation)")
+    println("")
+
+    sum<String> = "ALL APPLY-EXECUTION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
