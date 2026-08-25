@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (toolchain sync → real-HTTPS source-tree realization)
+> last_updated: 2026-08-25 (toolchain sync → full pipeline over real HTTPS)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -25,7 +25,7 @@ cd $VYBU && cmake --build build
   `vyb-os-stable` to `origin/main` + rebuilds `build/vyb` only when new
   commits have been pushed; refuses on divergence; no-op when the remote is
   unreachable (stable stays). `./build/sync-os-toolchain.sh`.
-  As of this session it is at `0c45003` = origin/main, and all 8 VybOS slices
+  As of this session it is at `b31445c` = origin/main, and all VybOS slices
   PASS on the rebuilt binary.
 - Decision that was OPEN is now resolved: **track main (pushed-state bound)**,
   not a hard pin.
@@ -37,6 +37,7 @@ $VYB build/build-compose.vyb --module-path modules     # composition, offline
 $VYB build/build-apply.vyb    --module-path modules    # apply dry-run, offline
 $VYB build/build-exec.vyb     --module-path modules    # execute plan, needs httpbin
 $VYB build/build-url-realize.vyb --module-path modules # real HTTPS, needs network
+$VYB build/build-exec-real.vyb --module-path modules   # FULL pipeline over real HTTPS (~20MB fetch)
 ```
 
 ## 2. Current state (all committed, pushed, 7/7 PASS)
@@ -64,6 +65,13 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 7. **Real HTTPS source-TREE** — `build/build-real-tree.vyb`: fetch a REAL GitHub
    tarball over verified TLS → inflate → extract → 59 file members realised
    content-addressed + `.tree.json` manifest (10 invariants).
+8. **FULL pipeline over real HTTPS** — `build/build-exec-real.vyb`: compose →
+   gate → plan → execute, where the execution step realises each pkg from its
+   OWN real source over verified TLS (`realize_spec_url`, no httpbin mirror).
+   openssh/vim/nginx fetched in topological order (~20MB over TLS, 8s), 16
+   invariants, deterministic. (vim's module source now points at the DIRECT
+   codeload endpoint — github's /archive/ URL 302-redirects, which the verified
+   client doesn't follow.)
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -94,9 +102,10 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       `sharkdp/fd` master → inflate (MB-scale) → 59 file members realized,
       deterministic pkgCA, repeat-stable. (Scale sanity: an underscore tarball
       inflating to 7.8MB / 400 members also extracted cleanly in probing.)
-- [ ] **Realizer consumes a module-composed spec over real HTTPS**: `build-exec`
-      uses the httpbin mirror; swap its fetch to `fetch_url` per-pkg so the whole
-      compose→plan→execute pipeline runs over genuine TLS. (Filename collision
+- [x] **Realizer consumes a module-composed spec over real HTTPS**: `build-exec`
+      used the httpbin mirror; `build/build-exec-real.vyb` swaps the fetch to
+      `fetch_url` per-pkg so the whole compose→plan→execute pipeline runs over
+      genuine TLS (verified ~20MB / 8s; 16 invariants). (Filename collision
       note: module was renamed `modules/urlrealize.vyb`, not `realize-url.vyb`,
       because `-` is invalid in a module identifier.)
 - [ ] **Generations wiring**: tie `spec_digest` + `plan_lines` into

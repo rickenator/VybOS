@@ -9,7 +9,7 @@ share(all)
 vim(enabled<Bool>)<Module> -> {
     m<Module> = empty_module()
     if (enabled) {
-        m = with_pkg(m, mk_pkg("vim", "9.1", "https://github.com/vim/vim/archive/v9.1.tar.gz", Vec()))
+        m = with_pkg(m, mk_pkg("vim", "9.1", "https://codeload.github.com/vim/vim/tar.gz/refs/tags/v9.1.0", Vec()))
     }
     return m
 }
