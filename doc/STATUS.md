@@ -87,6 +87,11 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
   #191 (archive inflate O(N²) one-byte concat → O(N) Vec-buffer; runtime string
   registry probe chains bounded via rehash-on-churn). This unblocks real-HTTPS
   source-TREE realization (see §4).
+- **#194 (filed this session)** — the `http`/`https` fetch clients do NOT follow
+  HTTP redirects (302), and `HttpResponse` exposes no `Location`. GitHub's
+  `/archive/<ref>.tar.gz` URL 302-redirects to codeload, so such `source` URLs
+  can never be realised over genuine TLS; VybOS points vim at the direct codeload
+  endpoint as a workaround. RFE: bounded redirect following, OR expose `Location`.
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
