@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (toolchain T0a→T0c: gmp/mpfr/mpc derivations landed)
+> last_updated: 2026-08-25 (toolchain T0c→T1: gmp/mpfr/mpc + binutils derived)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -120,6 +120,13 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     the GNU lib trio (gmp → mpfr → mpc) that gcc links. Content-addressed
     (valid ar, 311KB) + `.meta.json` records both deps. Source via
     `www.multiprecision.org` (`.tar.gz`; archive in `src/.libs/libmpc.a`).
+15. **TOOLCHAIN T1 (binutils)** — `build/build-derive-binutils.vyb`: builds
+    `as`/`ld`/`ar` (assembler+linker+archiver — the "B" half of the C toolchain
+    gcc drives) as a build-stage derivation. Out-of-tree build (binutils
+    rejects in-source configure); `MAKEINFO=true` since the host lacks
+    makeinfo. All three content-addressed; each is a runnable `GNU Binutils
+    2.43`. Source: 28MB via the OSUOSL mirror (fits under the registry ceiling
+    with #191).
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -184,9 +191,9 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       doc/PLAN-BUILD-DERIVATIONS.md): landed — hello-vyb (byte-reproducible),
       busybox 1.36.1 (real fetched source → built ELF), a SELF-HOSTING C
       compiler bootstrap (chibicc: GEN-1 → GEN-2 via self-recompile), and
-      toolchain T0a→T0c (gmp → libgmp.a, mpfr → libmpfr.a, mpc → libmpc.a — the
-      GNU lib trio gcc links). NEXT (broken up, per release 0.1 "Brutal
-      Dogfood"): binutils → gcc (C-only) → Linux kernel — turning
+      toolchain T0a→T1 (gmp → libgmp.a, mpfr → libmpfr.a, mpc → libmpc.a — the
+      GNU lib trio gcc links — and binutils → as/ld/ar). NEXT (broken up, per
+      release 0.1 "Brutal Dogfood"): gcc (C-only) → Linux kernel — turning
       the fetched QEMU vmlinuz into a *derived* VybOS kernel and giving issue
       #4's `build.plan` a real `linux-<ver>-vyb` package.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or

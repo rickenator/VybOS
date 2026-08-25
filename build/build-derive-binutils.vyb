@@ -1,0 +1,131 @@
+// build-derive-binutils.vyb — VybOS TOOLCHAIN T1: binutils (assembler +
+// linker + archiver) as a build-stage derivation. This is the "B" half of the
+// C toolchain that gcc drives (`as`, `ld`, `ar`).
+//
+// Pipeline (all vybey + a gated host build action):
+//   fetch GNU binutils source over verified TLS (.tar.xz, 28MB)
+//   realize the SOURCE content-addressed into the flat store
+//   build in an OUT-OF-TREE dir (binutils forbids in-source configure):
+//     mkdir build && cd build
+//     ../binutils-<ver>/configure --prefix=$P --disable-nls --disable-werror
+//     make -j4 && make install
+//   content-address the BUILT ld (flagship .bin) + as + ar (extra store .bin)
+//   + .meta.json (buildRecipe records the configure line)
+//
+// Self-contained: needs only a host C compiler (gcc). libbfd/libopcodes build
+// static (--disable-shared). Host: binutils.org / mirrors (ftp.gnu.org hangs
+// the verified TLS client; we use the OSUOSL mirror, direct 200, no redirect).
+// Flat store, binary-safe String IO.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import http::{HttpResponse}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+is_elf(b<String>)<Bool> -> {
+    // ELF magic: 0x7f 'E' 'L' 'F'
+    return b.len() >= 4 && b.char_at(0) == 127 && b.char_at(1) == 69 &&
+           b.char_at(2) == 76 && b.char_at(3) == 70
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    buildRoot<String> = "build/derive-binutils-out"
+    name<String> = "binutils"
+    ver<String> = "2.43"
+    srcUrl<String> = "https://ftp.osuosl.org/pub/gnu/binutils/binutils-" + ver + ".tar.xz"
+
+    println("=== VybOS TOOLCHAIN T1: GNU binutils (as/ld/ar) as a build-stage derivation ===\n")
+    fails<Int> = 0
+
+    // 1. fetch + realize the source.
+    u<UrlSplit> = url_split(srcUrl)
+    r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+    fails = fails + check(r.status == 200, "fetched binutils source over verified TLS (" + r.status.to_string() + ")")
+    if (r.status != 200) { println("  abort: fetch failed"); return 1 }
+    srcCA<Int> = content_hash(r.body, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    fails = fails + check(r.body.len() > 10000000, "binutils source tarball non-trivial (" + r.body.len().to_string() + " bytes)")
+    fails = fails + check(write_flat(sSrc, r.body), "binutils source content-addressed into store (.src)")
+    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+
+    // 2. build OUT-OF-TREE (binutils rejects in-source configure), then install.
+    P<String> = "P=\"$PWD/" + buildRoot + "/pfx\""
+    rec<String> = P + " && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\" \"" + buildRoot + "/build\"" +
+        " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\"" +
+        " && cd \"" + buildRoot + "/build\"" +
+        " && ../" + name + "-" + ver + "/configure --prefix=\"$P\" --disable-nls --disable-werror --disable-shared" +
+        " && make -j4 MAKEINFO=true && make install MAKEINFO=true"
+    fails = fails + check(run(rec) == 0, "binutils configured (out-of-tree) + built + installed")
+
+    // 3. content-address the BUILT binaries (installed prefix layout).
+    outCA<Int> = 0
+    tgt<String> = buildRoot + "/pfx/bin/"
+    // flagship: the linker `ld`.
+    ld<String> = read_flat(tgt + "ld")
+    fails = fails + check(ld.len() > 500000, "built ld non-trivial (" + ld.len().to_string() + " bytes)")
+    fails = fails + check(is_elf(ld), "ld is a valid ELF")
+    outCA = content_hash(ld, name, ver)
+    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + "-ld.bin"
+    fails = fails + check(write_flat(oBin, ld), "built ld content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+
+    // extras: assembler `as` + archiver `ar` (gcc drives all of as/ld/ar).
+    asB<String> = read_flat(tgt + "as")
+    fails = fails + check(is_elf(asB) && asB.len() > 300000, "built as non-trivial ELF (" + asB.len().to_string() + " bytes)")
+    asCA<Int> = content_hash(asB, name, ver + "-as")
+    write_flat(storeDir + "/" + asCA.to_string() + "-" + name + "-" + ver + "-as.bin", asB)
+    arB<String> = read_flat(tgt + "ar")
+    fails = fails + check(is_elf(arB) && arB.len() > 200000, "built ar non-trivial ELF (" + arB.len().to_string() + " bytes)")
+    arCA<Int> = content_hash(arB, name, ver + "-ar")
+    write_flat(storeDir + "/" + arCA.to_string() + "-" + name + "-" + ver + "-ar.bin", arB)
+
+    // 4. metadata.
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
+        ", \"buildRecipe\": \"configure --disable-nls --disable-werror --disable-shared && make && make install\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"artifacts\": {\"ld\": " + outCA.to_string() + ", \"as\": " + asCA.to_string() + ", \"ar\": " + arCA.to_string() + "}" +
+        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-ld.bin\"}"
+    mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
+    println("  output ld  : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  extras as  : store/" + asCA.to_string() + "-" + name + "-" + ver + "-as.bin  (as " + asCA.to_string() + ")")
+    println("  extras ar  : store/" + arCA.to_string() + "-" + name + "-" + ver + "-ar.bin  (ar " + arCA.to_string() + ")")
+    println("  deps        : host C compiler only (self-contained)")
+    println("  meta        : " + mPath)
+    println("")
+    sum<String> = "ALL BINUTILS TOOLCHAIN-DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
