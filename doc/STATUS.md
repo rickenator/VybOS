@@ -147,6 +147,13 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     version string shows `gcc (GCC) 13.2.0, GNU ld 2.43` (the derived
     compiler). The fetched QEMU vmlinuz is now replaceable by a derived kernel —
     giving build.plan a real `linux-6.6-vyb`.
+22. **INDEPENDENT-BUILD REPRODUCIBILITY** — `build-reprobuild-binutils.vyb` builds
+    binutils twice into independent build roots under `SOURCE_DATE_EPOCH` +
+    `-ffile-prefix-map` + a PINNED install spec and proves `ld`/`as`/`ar` are
+    byte-identical (`REPROBUILD:BINUTILS:PASS`). KEY: GNU tools bake `$prefix`
+    strings into binaries, so the install location must be pinned — path-mapping
+    compiles alone is insufficient. `build-reprobuild-gcc.vyb` extends the same
+    pattern to gcc (builds the whole tower twice).
 21. **TOOLCHAIN SOURCE_DATE_EPOCH DETERMINISM** — the GNU-lib + ELF toolchain
     slices export `SOURCE_DATE_EPOCH` (reproducible-builds). gmp+mpfr
     (`build-derive-mpfr.vyb`) PROVEN byte-reproducible across independent

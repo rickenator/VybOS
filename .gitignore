@@ -27,3 +27,4 @@ build/derive-gcc-out*/
 build/derive-kernel-out*/
 build/derive-qemu-out*/
 build/reprobinutils-out*/
+build/reprogcc-out*/
