@@ -160,6 +160,19 @@ main()<Int> -> {
         ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-bzImage.bin\"}"
     mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
+
+    // 5. FOLD THE BOOT PROOF INTO THE DERIVATION: boot the derived bzImage in
+    //    QEMU and gate on VYBOS_READY=1. tools/vybos-run --runtime qemu cooks
+    //    a newc initramfs + boots; --test asserts the ready contract and exits
+    //   0 on success. Defaults to the HOST qemu (test harness, like host gcc
+    //   bootstraps), but VYBOS_QEMU[/LIBDIR/DATA] env can point it at the
+    //   DERIVED qemu (build-derive-qemu.vyb). The post-READY "Attempted to
+    //   kill init" panic (PID 1 exits after ready) is the EXPECTED stop.
+    //   Requires the staged VybOS rootfs (build/rootfs-out), auto-staged if absent.
+    bzPath<String> = kbuild + "/arch/x86/boot/bzImage"
+    bootRc<Int> = run("./tools/vybos-run --runtime qemu --kernel \"" + bzPath + "\" --test")
+    fails = fails + check(bootRc == 0, "derived kernel BOOTS the VybOS rootfs to VYBOS_READY=1 in QEMU (dir via VYBOS_QEMU)" + bootRc.to_string())
+
     println("  output bz  : " + oBin + "  (ca " + outCA.to_string() + ")")
     println("  toolchain   : DERIVED gcc 13.2.0 + binutils 2.43 (built in-scratch)")
     println("  meta        : " + mPath)
