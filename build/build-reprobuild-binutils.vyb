@@ -1,0 +1,92 @@
+// build-reprobuild-binutils.vyb — INDEPENDENT-PATH byte-reproducibility proof.
+//
+// Builds binutils TWICE into two completely separate build dirs + prefixes
+// (paths differ), under SOURCE_DATE_EPOCH + -ffile-prefix-map (neutralize the
+// build base) + a PINNED --with-lib-path (ld's default lib-search path is
+// derived from $prefix, so it must be pinned independent of the prefix for
+// byte-identical ld). Asserts ld/as/ar are byte-identical across the two
+// independent builds.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import url::{url_split, UrlSplit}
+import http::{HttpResponse}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(c<String>)<Int> -> {
+    freedom { return exec_run(c) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+// Build binutils once into base/<tag>-build + base/<tag>-pfx and copy the
+// resulting ld/as/ar out to base/<tag>-{ld,as,ar}.
+build_once(base<String>, name<String>, ver<String>, tag<String>)<Bool> -> {
+    rec<String> = "B=$PWD/" + base + " && rm -rf $B/" + tag + "-build $B/" + tag + "-pfx" +
+        " && mkdir -p $B/" + tag + "-build $B/" + tag + "-pfx" +
+        " && cd $B/" + tag + "-build" +
+        " && export SOURCE_DATE_EPOCH=1785000000 CFLAGS=-ffile-prefix-map=$B=/p" +
+        " && $B/" + name + "-" + ver + "/configure --prefix=$B/fp" +
+        " --exec-prefix=$B/fp --bindir=$B/fp/bin --libdir=$B/fp/lib --libexecdir=$B/fp/libexec" +
+        " --with-lib-path=$B/fp/lib --disable-nls --disable-werror --disable-shared --disable-gprofng" +
+        " && make -j4 MAKEINFO=true" +
+        " && cp $B/" + tag + "-build/ld/ld-new $B/" + tag + "-ld" +
+        " && cp $B/" + tag + "-build/gas/as-new $B/" + tag + "-as" +
+        " && cp $B/" + tag + "-build/binutils/ar $B/" + tag + "-ar"
+    return run(rec) == 0
+}
+
+main()<Int> -> {
+    name<String> = "binutils"
+    ver<String> = "2.43"
+    url<String> = "https://ftp.osuosl.org/pub/gnu/binutils/binutils-2.43.tar.xz"
+    base<String> = "build/reprobinutils-out"
+
+    fails<Int> = 0
+    fails = fails + check(run("rm -rf " + base + " && mkdir -p " + base) == 0, "clean + made base dir")
+
+    // 1. fetch + realize the source once (shared by both builds).
+    u<UrlSplit> = url_split(url)
+    r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+    fails = fails + check(r.status == 200, "fetched binutils source over verified TLS")
+    fails = fails + check(r.body.len() > 10000000, "tarball non-trivial")
+    match (open_write(base + "/binutils-2.43.tar.xz")) {
+        w -> {
+            write_str(w, r.body)
+            close(w)
+            fails = fails + check(run("B=$PWD/" + base + " && tar xJf $B/binutils-2.43.tar.xz -C $B") == 0, "extracted source (shared)")
+        }
+        ? -> { return 1 }
+    }
+
+    // 2. two INDEPENDENT builds (separate build+prefix paths).
+    fails = fails + check(build_once(base, name, ver, "a"), "build A (path a-build/a-pfx)")
+    fails = fails + check(build_once(base, name, ver, "b"), "build B (path b-build/b-pfx)")
+
+    // 3. byte-compare ld/as/ar across the independent builds.
+    fails = fails + check(read_flat(base + "/a-ld") == read_flat(base + "/b-ld") &&
+                          read_flat(base + "/a-ld").len() > 3000000,
+                          "ld byte-identical across independent paths (A vs B)")
+    fails = fails + check(read_flat(base + "/a-as") == read_flat(base + "/b-as") &&
+                          read_flat(base + "/a-as").len() > 2000000,
+                          "as byte-identical across independent paths (A vs B)")
+    fails = fails + check(read_flat(base + "/a-ar") == read_flat(base + "/b-ar") &&
+                          read_flat(base + "/a-ar").len() > 1000000,
+                          "ar byte-identical across independent paths (A vs B)")
+
+    if (fails == 0) { println("REPROBUILD:BINUTILS:PASS") } else { println("REPROBUILD:BINUTILS:FAILURE") }
+    return 0
+}
