@@ -147,13 +147,14 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     version string shows `gcc (GCC) 13.2.0, GNU ld 2.43` (the derived
     compiler). The fetched QEMU vmlinuz is now replaceable by a derived kernel —
     giving build.plan a real `linux-6.6-vyb`.
-20. **BYTE-DETERMINISTIC KERNEL** — the kernel derivation now fixes
+20. **BYTE-DETERMINISTIC KERNEL (path-independent)** — the kernel derivation fixes
     `KBUILD_BUILD_TIMESTAMP/USER/HOST` + `SOURCE_DATE_EPOCH` + gcc
-    `-frandom-seed`/`-fno-guess-branch-probability`, builds the kernel TWICE
-    clean, and ASSERTS identical bzImage (proven: sha `52817a4c…`). No hostname/
-    timestamp leak (`(vybos@deterministic-rb000)`, fixed date). Output is a
-    nested `store/<hex>/linux-6.6-bzImage.bin`; boots under the packaged derived
-    QEMU to `VYBOS_READY=1`. Flat store artifacts cleared 2026-08-25.
+    `-frandom-seed`/`-fno-guess-branch-probability` + `-ffile-prefix-map=$B/=`, and
+    builds the kernel TWICE into TWO DIFFERENT build roots (`$B/kbA`, `$B/kbB`),
+    asserting identical bzImage — PATH-INDEPENDENT determinism (sha `4201e8e4…`,
+    rebuild-identical from any build root). No hostname/timestamp leak
+    (`(vybos@deterministic-rb000)`, fixed date). Nested `store/<hex>/…bzImage.bin`;
+    boots under the packaged derived QEMU to `VYBOS_READY=1`. Flat store cleared.
 19. **PACKAGED DERIVED QEMU TREE** — `build/build-package-qemu.vyb` stitches the
     QEMU-from-source runtime (the derived `qemu-system-x86_64` ELF + its linked
     libglib + the `pc-bios` SeaBIOS firmware) into ONE NESTED store entry

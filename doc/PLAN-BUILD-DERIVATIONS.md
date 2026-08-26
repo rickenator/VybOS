@@ -142,10 +142,11 @@ mirroring Nix derivations.
   stdlib `fs::mkdir`; obsolete flat `store/<ca>-<name>-*.{bin,src}` files are
   gone. `hello-vyb` + the packaged QEMU tree + the deterministic kernel are
   nested entries; the framework's closure entries key by `real` (Int).
-- **Byte-deterministic kernel**: the kernel derivation fixes
+- **Byte-deterministic kernel (path-independent)**: the kernel derivation fixes
   `KBUILD_BUILD_TIMESTAMP/USER/HOST` + `SOURCE_DATE_EPOCH` + gcc
-  `-frandom-seed`/`-fno-guess-branch-probability`, builds twice clean, and
-  asserts identical bzImage (proven, not assumed).
+  `-frandom-seed`/`-fno-guess-branch-probability` + `-ffile-prefix-map=$B/=`, and
+  builds twice into TWO DIFFERENT build roots (`$B/kbA`/`$B/kbB`), asserting
+  identical bzImage — proven path-independent (sha `4201e8e4…`).
 - **Kernel build deps must be compiled, not skipped**: x86_64 objtool is
   unconditional and links libelf; kconfig regenerates its lexer/parser with
   flex/bison. The kernel derivation builds bison/flex/elfutils in-scratch.

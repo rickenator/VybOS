@@ -75,6 +75,23 @@ has_hdrs(b<String>)<Bool> -> {
            b.char_at(o+2) == 114 && b.char_at(o+3) == 83
 }
 
+// kconfig configure + dep-trim command for a GIVEN build dir (absolute $B/...).
+// Each kernel build gets its OWN independent build root (kbA/kbB) so the
+// byte-determinism proof also proves PATH-INDEPENDENCE, not just a clean
+// rebuild in the same dir. `dir` is an absolute shell path exprs like "$B/kbA".
+kcfgOp(dir<String>, ver<String>)<String> -> {
+    nl<String> = "linux-" + ver
+    return "cd \"$B/" + nl + "\" && make O=\"" + dir + "\" defconfig" +
+        " && \"$B/" + nl + "/scripts/config\" --file \"" + dir + "/.config\"" +
+        " -d DEBUG_INFO -d DEBUG_INFO_BTF -d GDB_SCRIPTS -d STACK_VALIDATION" +
+        " -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
+        " -d OBJTOOL -d MODULE_SIG -d SYSTEM_TRUSTED_KEYS -d SYSTEM_REVOCATION_KEYS" +
+        " && make O=\"" + dir + "\" olddefconfig" +
+        " && \"$B/" + nl + "/scripts/config\" --file \"" + dir + "/.config\"" +
+        " -d OBJTOOL -d STACK_VALIDATION -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
+        " && make O=\"" + dir + "\" olddefconfig"
+}
+
 main()<Int> -> {
     storeDir<String> = "store"
     buildRoot<String> = "build/derive-kernel-out"
@@ -95,20 +112,6 @@ main()<Int> -> {
     fails = fails + check(r.body.len() > 100000000, "kernel source tarball non-trivial (" + r.body.len().to_string() + " bytes)")
     fails = fails + check(write_flat(sSrc, r.body), "kernel source content-addressed into store (.src)")
     println("  source .src : " + sSrc + "  (ca " + srcCA + ")")
-
-    kbuild<String> = buildRoot + "/kbuild"
-
-    // kconfig configure + dep-trim fragment (re-run per build) — uses $B (absolute)
-    // so it's cwd-safe; ver is baked. Build twice for a byte-determinism proof.
-    kcfgOp<String> = "cd \"$B/linux-" + ver + "\" && make O=\"$B/kbuild\" defconfig" +
-        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
-        " -d DEBUG_INFO -d DEBUG_INFO_BTF -d GDB_SCRIPTS -d STACK_VALIDATION" +
-        " -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
-        " -d OBJTOOL -d MODULE_SIG -d SYSTEM_TRUSTED_KEYS -d SYSTEM_REVOCATION_KEYS" +
-        " && make O=\"$B/kbuild\" olddefconfig" +
-        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
-        " -d OBJTOOL -d STACK_VALIDATION -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
-        " && make O=\"$B/kbuild\" olddefconfig"
 
     // 2. Build the whole tower in one gated host action: host build-tools into
     //    $P, then the DERIVED toolchain into $TC, then the kernel with CC=/gcc.
@@ -144,9 +147,9 @@ main()<Int> -> {
         //     + gcc -frandom-seed/-fno-guess-branch-probability, then PROVE it with
         //     a clean second build (same path) -> identical bzImage bytes.
         " && export CC=\"$TC/bin/gcc\" HOSTCC=\"$TC/bin/gcc\"" +
-        " && export KBUILD_BUILD_TIMESTAMP=\"Tue Aug 25 2026 00:00:00 +0000\" KBUILD_BUILD_USER=\"vybos\" KBUILD_BUILD_HOST=\"deterministic-rb000\" SOURCE_DATE_EPOCH=1785000000 KCFLAGS=\"-frandom-seed=vybos-rb000 -fno-guess-branch-probability\"" +
-        " && " + kcfgOp + " && make O=\"$B/kbuild\" -j20 bzImage && cp \"$B/kbuild/arch/x86/boot/bzImage\" \"$B/kbz1\"" +
-        " && rm -rf \"$B/kbuild\" && mkdir -p \"$B/kbuild\" && " + kcfgOp + " && make O=\"$B/kbuild\" -j20 bzImage && cp \"$B/kbuild/arch/x86/boot/bzImage\" \"$B/kbz2\""
+        " && export KBUILD_BUILD_TIMESTAMP=\"Tue Aug 25 2026 00:00:00 +0000\" KBUILD_BUILD_USER=\"vybos\" KBUILD_BUILD_HOST=\"deterministic-rb000\" SOURCE_DATE_EPOCH=1785000000 KCFLAGS=\"-frandom-seed=vybos-rb000 -fno-guess-branch-probability -ffile-prefix-map=$B/=\"" +
+        " && " + kcfgOp("$B/kbA", ver) + " && make O=\"$B/kbA\" -j20 bzImage && cp \"$B/kbA/arch/x86/boot/bzImage\" \"$B/kbz1\"" +
+        " && " + kcfgOp("$B/kbB", ver) + " && make O=\"$B/kbB\" -j20 bzImage && cp \"$B/kbB/arch/x86/boot/bzImage\" \"$B/kbz2\""
 
     prep<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"" +
         " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\" && " + btools
@@ -183,7 +186,7 @@ main()<Int> -> {
     //   DERIVED qemu (build-derive-qemu.vyb). The post-READY "Attempted to
     //   kill init" panic (PID 1 exits after ready) is the EXPECTED stop.
     //   Requires the staged VybOS rootfs (build/rootfs-out), auto-staged if absent.
-    bzPath<String> = kbuild + "/arch/x86/boot/bzImage"
+    bzPath<String> = buildRoot + "/kbB/arch/x86/boot/bzImage"
     bootRc<Int> = run("./tools/vybos-run --runtime qemu --kernel \"" + bzPath + "\" --test")
     fails = fails + check(bootRc == 0, "derived kernel BOOTS the VybOS rootfs to VYBOS_READY=1 in QEMU (dir via VYBOS_QEMU)" + bootRc.to_string())
 
