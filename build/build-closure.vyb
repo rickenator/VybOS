@@ -22,6 +22,7 @@
 
 import collections
 import http::{http_get_full, HttpResponse}
+import fs::{mkdir}
 import io
 import vybos::{content_hash}
 import plan::{Pkg, Dep, SystemSpec, RealRec,
@@ -86,12 +87,15 @@ meta_inputs(pkgs<Vec<Pkg>>, recs<Vec<RealRec>>, deps<Vec<Dep>>)<String> -> {
     return s
 }
 
-// write source + .meta.json for one realised derivation. Returns true on both
-// writes succeeding (flat store: files only, no dirs to create).
-realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<Int>,
+// write source + .meta.json for one realised derivation into a NESTED store:
+// storeDir/<real>/<name>-<version>.{src,meta.json}, creating the per-real dir
+// with stdlib mkdir — no more host mkdir -p or flat store.
+realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<String>,
             real<Int>, inputsJson<String>)<Bool> -> {
-    sp<String> = "/vyb/store/" + real.to_string() + "-" + pkg.name + "-" + pkg.version
-    base<String> = storeDir + "/" + real.to_string() + "-" + pkg.name + "-" + pkg.version
+    d<String> = storeDir + "/" + real.to_string()
+    match (mkdir(d)) { b -> {} ? -> {} }   // idempotent; open_write below reveals a real failure
+    sp<String> = "/vyb/store/" + real.to_string() + "/" + pkg.name + "-" + pkg.version
+    base<String> = d + "/" + pkg.name + "-" + pkg.version
     // source blob
     okS<Bool> = false
     match (open_write(base + ".src")) {
@@ -103,8 +107,8 @@ realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<Int>,
     meta<String> = "{\"name\": \"" + pkg.name +
         "\", \"version\": \"" + pkg.version +
         "\", \"source\": \"" + pkg.source +
-        "\", \"contentHash\": " + contentHash.to_string() +
-        ", \"closureReal\": " + real.to_string() +
+        "\", \"contentHash\": \"" + contentHash +
+        "\", \"closureReal\": " + real.to_string() +
         ", \"storePath\": \"" + sp +
         "\", \"inputs\": " + inputsJson + "}"
     okM<Bool> = false
@@ -156,13 +160,13 @@ main()<Int> -> {
                 failed = failed + 1
             } else {
                 bytes<String> = r.body
-                ch<Int> = content_hash(bytes, nm, pkg.version)
+                ch<String> = content_hash(bytes, nm, pkg.version)
                 deps<Vec<Dep>> = pkg.deps
                 ij<String> = meta_inputs(spec.pkgs, recs, deps)
                 if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
                     println("  REALISED " + nm + "-" + pkg.version +
                             "  closure=" + real.to_string() +
-                            "  contentHash=" + ch.to_string())
+                            "  contentHash=" + ch)
                     realised = realised + 1
                 } else {
                     println("  FAILED  " + nm + " (write)");

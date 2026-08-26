@@ -76,10 +76,10 @@ main()<Int> -> {
     fails = fails + check(tarball.len() > 1000000, "gmp source tarball non-trivial (" + tarball.len().to_string() + " bytes)")
 
     // 2. realize the SOURCE (content-addressed .src).
-    srcCA<Int> = content_hash(tarball, name, ver)
-    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    srcCA<String> = content_hash(tarball, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA + "-" + name + "-" + ver + "-src.tar.xz"
     fails = fails + check(write_flat(sSrc, tarball), "gmp source content-addressed into store (.src)")
-    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+    println("  source .src : " + sSrc + "  (ca " + srcCA + ")")
 
     // 3. build (host cc): unpack xz -> configure -> make.
     rec<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot +
@@ -92,23 +92,23 @@ main()<Int> -> {
     lib<String> = read_flat(dir + "/.libs/libgmp.a")
     fails = fails + check(lib.len() > 100000, "built libgmp.a non-trivial (" + lib.len().to_string() + " bytes)")
     fails = fails + check(is_ar_archive(lib), "libgmp.a is a valid ar archive")
-    outCA<Int> = content_hash(lib, name, ver)
-    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + ".bin"
-    fails = fails + check(write_flat(oBin, lib), "built libgmp.a content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+    outCA<String> = content_hash(lib, name, ver)
+    oBin<String> = storeDir + "/" + outCA + "-" + name + "-" + ver + ".bin"
+    fails = fails + check(write_flat(oBin, lib), "built libgmp.a content-addressed into store (.bin, ca " + outCA + ")")
 
     hdr<String> = read_flat(dir + "/gmp.h")
     fails = fails + check(hdr.len() > 1000, "gmp.h header produced (" + hdr.len().to_string() + " bytes)")
-    hCA<Int> = content_hash(hdr, name, "header")
-    write_flat(storeDir + "/" + hCA.to_string() + "-" + name + "-" + ver + ".h", hdr)
+    hCA<String> = content_hash(hdr, name, "header")
+    write_flat(storeDir + "/" + hCA + "-" + name + "-" + ver + ".h", hdr)
 
     // 5. metadata
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
-        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
-        ", \"buildRecipe\": \"configure --disable-shared && make\", \"outputContentHash\": " + outCA.to_string() +
-        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + ".bin\"}"
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA +
+        ", \"buildRecipe\": \"configure --disable-shared && make\", \"outputContentHash\": " + outCA +
+        ", \"storePath\": \"/vyb/store/" + outCA + "-" + name + "-" + ver + ".bin\"}"
     mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
-    println("  output .bin : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  output .bin : " + oBin + "  (ca " + outCA + ")")
     println("  meta        : " + mPath)
     println("")
     sum<String> = "ALL GMP TOOLCHAIN-DERIVATION INVARIANTS PASS"

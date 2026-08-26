@@ -62,7 +62,7 @@ write_flat(path<String>, content<String>)<Bool> -> {
 // genuine toolchain-specific build-recipe step. Byte-reproducibility holds for
 // a FIXED build path (verified: make clean && make reproduces the SHA); full
 // cross-path reprobuilds need SOURCE_DATE_EPOCH/-frandom-seed (a follow-on).
-build_real(buildRoot<String>, srcStore<String>, ver<String>)<Int> -> {
+build_real(buildRoot<String>, srcStore<String>, ver<String>)<String> -> {
     d<String> = buildRoot + "/busybox-" + ver
     cfg<String> = d + "/.config"
     rec<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot +
@@ -70,9 +70,9 @@ build_real(buildRoot<String>, srcStore<String>, ver<String>)<Int> -> {
         " && make -C \"" + d + "\" defconfig </dev/null" +
         " && sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' \"" + cfg + "\"" +
         " && make -C \"" + d + "\" -j4 </dev/null"
-    if (run(rec) != 0) { return 0 }
+    if (run(rec) != 0) { return "" }
     out<String> = read_flat(d + "/busybox")
-    if (out.len() == 0) { return 0 }
+    if (out.len() == 0) { return "" }
     return content_hash(out, "busybox", ver)
 }
 
@@ -94,10 +94,10 @@ main()<Int> -> {
     fails = fails + check(tarball.len() == 2525473, "source tarball is the expected " + tarball.len().to_string() + " bytes")
 
     // 2. realize the SOURCE into the flat store (content-addressed .src).
-    srcCA<Int> = content_hash(tarball, name, ver)
-    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + ".src"
+    srcCA<String> = content_hash(tarball, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA + "-" + name + "-" + ver + ".src"
     fails = fails + check(write_flat(sSrc, tarball), "real source content-addressed into store (.src)")
-    println("  source .src: " + sSrc + "  (ca " + srcCA.to_string() + ")")
+    println("  source .src: " + sSrc + "  (ca " + srcCA + ")")
 
     // 3. build twice in the same scratch dir: both must yield a valid output.
     //    NOTE: a default busybox build is NOT byte-reproducible across rebuilds
@@ -105,16 +105,16 @@ main()<Int> -> {
     //    follow-on); hello-vyb (build-derive.vyb) certifies that the DERIVATION
     //    MACHINERY is byte-deterministic. Here we assert the build repeats and
     //    yields a valid, running, content-addressed output.
-    out1<Int> = build_real("build/derive-real-out", sSrc, ver)
-    out2<Int> = build_real("build/derive-real-out", sSrc, ver)
-    fails = fails + check(out1 > 0, "real source BUILT to a content-addressed output (ca " + out1.to_string() + ")")
-    fails = fails + check(out2 > 0, "derivation repeats (second build yields a valid output)")
+    out1<String> = build_real("build/derive-real-out", sSrc, ver)
+    out2<String> = build_real("build/derive-real-out", sSrc, ver)
+    fails = fails + check(out1.len() > 0, "real source BUILT to a content-addressed output (ca " + out1 + ")")
+    fails = fails + check(out2.len() > 0, "derivation repeats (second build yields a valid output)")
     println("  note: busybox default build is not byte-reproducible across rebuilds without reprobuild flags; hello-vyb certifies framework determinism.")
 
     // 4. realize the OUTPUT + metadata.
     bin1<String> = read_flat("build/derive-real-out/busybox-" + ver + "/busybox")
-    oBin<String> = storeDir + "/" + out1.to_string() + "-" + name + "-" + ver + ".bin"
-    fails = fails + check(out1 > 0 && write_flat(oBin, bin1), "built busybox content-addressed into store (.bin)")
+    oBin<String> = storeDir + "/" + out1 + "-" + name + "-" + ver + ".bin"
+    fails = fails + check(out1.len() > 0 && write_flat(oBin, bin1), "built busybox content-addressed into store (.bin)")
 
     elf<Bool> = false
     if (bin1.len() >= 4 && bin1.char_at(0) == 127 && bin1.char_at(1) == 69 &&
@@ -123,12 +123,12 @@ main()<Int> -> {
 
     recipe<String> = "tar xjf <src> -C <root> && make defconfig && sed -i CONFIG_TC->notset && make -j4"
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
-        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
-        ", \"buildRecipe\": \"" + recipe + "\", \"outputContentHash\": " + out1.to_string() +
-        ", \"storePath\": \"/vyb/store/" + out1.to_string() + "-" + name + "-" + ver + ".bin\"}"
-    mPath<String> = storeDir + "/" + out1.to_string() + "-" + name + "-" + ver + ".meta.json"
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": \"" + srcCA +
+        "\", \"buildRecipe\": \"" + recipe + "\", \"outputContentHash\": \"" + out1 +
+        "\", \"storePath\": \"/vyb/store/" + out1 + "-" + name + "-" + ver + ".bin\"}"
+    mPath<String> = storeDir + "/" + out1 + "-" + name + "-" + ver + ".meta.json"
     fails = fails + check(write_flat(mPath, meta), "build metadata written (.meta.json)")
-    println("  output .bin: " + oBin + "  (ca " + out1.to_string() + ")")
+    println("  output .bin: " + oBin + "  (ca " + out1 + ")")
     println("  meta       : " + mPath)
 
     // 5. the built busybox RUNS (a real tool, not just a blob).

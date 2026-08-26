@@ -83,11 +83,11 @@ main()<Int> -> {
     r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
     fails = fails + check(r.status == 200, "fetched gcc source over verified TLS (" + r.status.to_string() + ")")
     if (r.status != 200) { println("  abort: fetch failed"); return 1 }
-    srcCA<Int> = content_hash(r.body, name, ver)
-    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    srcCA<String> = content_hash(r.body, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA + "-" + name + "-" + ver + "-src.tar.xz"
     fails = fails + check(r.body.len() > 50000000, "gcc source tarball non-trivial (" + r.body.len().to_string() + " bytes)")
     fails = fails + check(write_flat(sSrc, r.body), "gcc source content-addressed into store (.src)")
-    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+    println("  source .src : " + sSrc + "  (ca " + srcCA + ")")
 
     // 2. build the whole dependency tree into ONE scratch prefix $P.
     P<String> = "P=\"$PWD/" + buildRoot + "/pfx\""
@@ -150,25 +150,25 @@ main()<Int> -> {
     tgt<String> = buildRoot + "/pfx/bin/"
     gccB<String> = read_flat(tgt + "gcc")
     fails = fails + check(is_elf(gccB) && gccB.len() > 500000, "built gcc driver non-trivial ELF (" + gccB.len().to_string() + " bytes)")
-    outCA<Int> = content_hash(gccB, name, ver)
-    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + "-gcc.bin"
-    fails = fails + check(write_flat(oBin, gccB), "built gcc driver content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+    outCA<String> = content_hash(gccB, name, ver)
+    oBin<String> = storeDir + "/" + outCA + "-" + name + "-" + ver + "-gcc.bin"
+    fails = fails + check(write_flat(oBin, gccB), "built gcc driver content-addressed into store (.bin, ca " + outCA + ")")
 
     // record cc1 + libgcc hashes (real compiler core + runtime), best-effort.
     cc1<String> = read_flat(buildRoot + "/pfx/libexec/gcc/x86_64-pc-linux-gnu/" + ver + "/cc1")
-    c1CA<Int> = content_hash(cc1, name, "cc1")
+    c1CA<String> = content_hash(cc1, name, "cc1")
 
     // 6. metadata.
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
-        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
-        ", \"buildRecipe\": \"configure --enable-languages=c --disable-bootstrap --with-gmp=<pfx> --with-mpfr=<pfx> --with-mpc=<pfx> && make\", \"outputContentHash\": " + outCA.to_string() +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA +
+        ", \"buildRecipe\": \"configure --enable-languages=c --disable-bootstrap --with-gmp=<pfx> --with-mpfr=<pfx> --with-mpc=<pfx> && make\", \"outputContentHash\": " + outCA +
         ", \"deps\": {\"gmp\": \"6.3.0\", \"mpfr\": \"4.2.1\", \"mpc\": \"1.3.1\", \"binutils\": \"2.43\"}" +
-        ", \"smokeTest\": \"derived gcc compiles+globally hello.c; output runs\", \"cc1ContentHash\": " + c1CA.to_string() +
-        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-gcc.bin\"}"
+        ", \"smokeTest\": \"derived gcc compiles+globally hello.c; output runs\", \"cc1ContentHash\": " + c1CA +
+        ", \"storePath\": \"/vyb/store/" + outCA + "-" + name + "-" + ver + "-gcc.bin\"}"
     mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
-    println("  output gcc : " + oBin + "  (ca " + outCA.to_string() + ")")
-    println("  cc1        : (compiler core) ca " + c1CA.to_string())
+    println("  output gcc : " + oBin + "  (ca " + outCA + ")")
+    println("  cc1        : (compiler core) ca " + c1CA)
     println("  deps        : gmp 6.3.0 + mpfr 4.2.1 + mpc 1.3.1 + binutils 2.43 (all derived in-scratch)")
     println("  meta        : " + mPath)
     println("")

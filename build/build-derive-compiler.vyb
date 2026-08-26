@@ -82,10 +82,10 @@ main()<Int> -> {
     fails = fails + check(tarball.len() > 50000, "source tarball non-trivial (" + tarball.len().to_string() + " bytes)")
 
     // 2. realize the SOURCE (content-addressed .src).
-    srcCA<Int> = content_hash(tarball, name, ver)
-    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-src.tar.gz"
+    srcCA<String> = content_hash(tarball, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA + "-" + name + "-src.tar.gz"
     fails = fails + check(write_flat(sSrc, tarball), "chibicc source content-addressed into store (.src)")
-    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+    println("  source .src : " + sSrc + "  (ca " + srcCA + ")")
 
     // 3. ~ a deterministic C probe the compiler must be able to build.
     prog<String> = "#include <stdio.h>\n" +
@@ -98,18 +98,18 @@ main()<Int> -> {
     fails = fails + check(run(g1) == 0, "GEN-1 built (host cc compiles chibicc source)")
     bin1<String> = read_flat(dir + "/chibicc")
     fails = fails + check(bin1.len() > 0 && is_elf(bin1), "GEN-1 is an ELF executable (" + bin1.len().to_string() + " bytes)")
-    out1CA<Int> = content_hash(bin1, name, "gen1")
-    fails = fails + check(write_flat(storeDir + "/" + out1CA.to_string() + "-" + name + "-gen1.bin", bin1),
-        "GEN-1 content-addressed into store (.bin, ca " + out1CA.to_string() + ")")
+    out1CA<String> = content_hash(bin1, name, "gen1")
+    fails = fails + check(write_flat(storeDir + "/" + out1CA + "-" + name + "-gen1.bin", bin1),
+        "GEN-1 content-addressed into store (.bin, ca " + out1CA + ")")
 
     // 5. BOOTSTRAP: GEN-1 compiles chibicc's own source -> GEN-2 compiler.
     g2<String> = "make -C \"" + dir + "\" stage2/chibicc"
     fails = fails + check(run(g2) == 0, "BOOTSTRAP: GEN-1 compiled chibicc's own source -> GEN-2")
     bin2<String> = read_flat(dir + "/stage2/chibicc")
     fails = fails + check(bin2.len() > 0 && is_elf(bin2), "GEN-2 (self-hosted) is an ELF executable (" + bin2.len().to_string() + " bytes)")
-    out2CA<Int> = content_hash(bin2, name, "gen2")
-    fails = fails + check(write_flat(storeDir + "/" + out2CA.to_string() + "-" + name + "-gen2.bin", bin2),
-        "GEN-2 content-addressed into store (.bin, ca " + out2CA.to_string() + ")")
+    out2CA<String> = content_hash(bin2, name, "gen2")
+    fails = fails + check(write_flat(storeDir + "/" + out2CA + "-" + name + "-gen2.bin", bin2),
+        "GEN-2 content-addressed into store (.bin, ca " + out2CA + ")")
 
     // 6. functional proof: BOTH compilers compile a real program to a runnable ELF.
     write_flat(dir + "/probe.c", prog)
@@ -123,16 +123,16 @@ main()<Int> -> {
 
     // 7. metadata
     meta<String> = "{\"name\": \"" + name + "\", \"sourceUrl\": \"" + srcUrl +
-        "\", \"sourceContentHash\": " + srcCA.to_string() +
+        "\", \"sourceContentHash\": " + srcCA +
         ", \"bootstrap\": \"gen1->selfhost->gen2\"" +
-        ", \"gen1ContentHash\": " + out1CA.to_string() +
-        ", \"gen2ContentHash\": " + out2CA.to_string() +
-        ", \"storePath\": \"/vyb/store/" + out2CA.to_string() + "-" + name + "-gen2.bin\"}"
+        ", \"gen1ContentHash\": " + out1CA +
+        ", \"gen2ContentHash\": " + out2CA +
+        ", \"storePath\": \"/vyb/store/" + out2CA + "-" + name + "-gen2.bin\"}"
     mPath<String> = storeDir + "/chibicc-bootstrap.meta.json"
     fails = fails + check(write_flat(mPath, meta), "bootstrap metadata written (.meta.json)")
 
-    println("  GEN-1 (host-cc) : " + storeDir + "/" + out1CA.to_string() + "-chibicc-gen1.bin")
-    println("  GEN-2 (selfhost): " + storeDir + "/" + out2CA.to_string() + "-chibicc-gen2.bin")
+    println("  GEN-1 (host-cc) : " + storeDir + "/" + out1CA + "-chibicc-gen1.bin")
+    println("  GEN-2 (selfhost): " + storeDir + "/" + out2CA + "-chibicc-gen2.bin")
     println("  meta            : " + mPath)
     println("")
     sum<String> = "ALL COMPILER-BOOTSTRAP DERIVATION INVARIANTS PASS"

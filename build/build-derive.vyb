@@ -22,6 +22,7 @@
 // Ranges are INCLUSIVE; artifact reading is byte-exact (binary-safe String).
 import collections
 import io::{open_read, read_all, close, open_write, write_str}
+import fs::{mkdir}
 import process::{exec_run}
 import vybos::{content_hash}
 
@@ -58,12 +59,12 @@ write_flat(path<String>, content<String>)<Bool> -> {
 // content address (0 on any failure: clean-dir, write, recipe, or missing bin).
 // The recipe compiles buildRoot/main.c -> buildRoot/<binName>.
 build_artifact(buildRoot<String>, src<String>, name<String>, ver<String>,
-               recipe<String>, binName<String>)<Int> -> {
-    if (run("rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"") != 0) { return 0 }
-    if (!write_flat(buildRoot + "/main.c", src)) { return 0 }
-    if (run("cd \"" + buildRoot + "\" && " + recipe) != 0) { return 0 }
+               recipe<String>, binName<String>)<String> -> {
+    if (run("rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"") != 0) { return "" }
+    if (!write_flat(buildRoot + "/main.c", src)) { return "" }
+    if (run("cd \"" + buildRoot + "\" && " + recipe) != 0) { return "" }
     out<String> = read_flat(buildRoot + "/" + binName)
-    if (out.len() == 0) { return 0 }
+    if (out.len() == 0) { return "" }
     return content_hash(out, name, ver)
 }
 
@@ -81,22 +82,24 @@ main()<Int> -> {
 
     // 1. source materialization: read the real source, content-address it into store.
     src<String> = read_flat(srcPath)
-    srcCA<Int> = content_hash(src, name, ver)
-    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + ".src"
+    srcCA<String> = content_hash(src, name, ver)
+    match (mkdir(storeDir + "/" + srcCA)) { b -> {} ? -> {} }
+    sSrc<String> = storeDir + "/" + srcCA + "/" + name + "-" + ver + ".src"
     fails = fails + check(src.len() > 0, "source read (" + src.len().to_string() + " bytes)")
     fails = fails + check(write_flat(sSrc, src), "source content-addressed into store (.src)")
     println("  source .src  : " + sSrc)
 
     // 2. build twice in separate scratch dirs and compare OUTPUT content addresses.
-    out1<Int> = build_artifact("build/derive-out", src, name, ver, recipe, binName)
-    out2<Int> = build_artifact("build/derive-out2", src, name, ver, recipe, binName)
-    fails = fails + check(out1 > 0, "build action produced a content-addressed output")
-    fails = fails + check(out2 == out1, "REPRODUCIBLE: identical output content address (" + out1.to_string() + ")")
+    out1<String> = build_artifact("build/derive-out", src, name, ver, recipe, binName)
+    out2<String> = build_artifact("build/derive-out2", src, name, ver, recipe, binName)
+    fails = fails + check(out1.len() > 0, "build action produced a content-addressed output")
+    fails = fails + check(out2 == out1, "REPRODUCIBLE: identical output content address (" + out1 + ")")
 
-    // 3. output realized into the flat store + metadata.
+    // 3. output realized into the NESTED store (store/<ca>/name-ver.bin) + metadata.
     bin1<String> = read_flat("build/derive-out/" + binName)
-    oBin<String> = storeDir + "/" + out1.to_string() + "-" + name + "-" + ver + ".bin"
-    fails = fails + check(out1 > 0 && write_flat(oBin, bin1), "built output content-addressed into store (.bin)")
+    match (mkdir(storeDir + "/" + out1)) { b -> {} ? -> {} }
+    oBin<String> = storeDir + "/" + out1 + "/" + name + "-" + ver + ".bin"
+    fails = fails + check(out1.len() > 0 && write_flat(oBin, bin1), "built output content-addressed into store (.bin)")
 
     // ELF magic check (read-only, binary-safe): \x7f 'E' 'L' 'F'
     elf<Bool> = false
@@ -105,10 +108,10 @@ main()<Int> -> {
     fails = fails + check(elf, "output is an ELF executable (" + bin1.len().to_string() + " bytes)")
 
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
-        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
-        ", \"buildRecipe\": \"" + recipe + "\", \"outputContentHash\": " + out1.to_string() +
-        ", \"storePath\": \"/vyb/store/" + out1.to_string() + "-" + name + "-" + ver + ".bin\"}"
-    mPath<String> = storeDir + "/" + out1.to_string() + "-" + name + "-" + ver + ".meta.json"
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": \"" + srcCA +
+        "\", \"buildRecipe\": \"" + recipe + "\", \"outputContentHash\": \"" + out1 +
+        "\", \"storePath\": \"/vyb/store/" + out1 + "/" + name + "-" + ver + ".bin\"}"
+    mPath<String> = storeDir + "/" + out1 + "/" + name + "-" + ver + ".meta.json"
     fails = fails + check(write_flat(mPath, meta), "build metadata written (.meta.json)")
     println("  output .bin  : " + oBin)
     println("  meta         : " + mPath)
@@ -117,7 +120,7 @@ main()<Int> -> {
     brc<Int> = run("./build/derive-out/" + binName)
     fails = fails + check(brc == 0, "built binary runs (exit 0)")
 
-    println("  outputContentHash: " + out1.to_string())
+    println("  outputContentHash: " + out1)
     println("")
     sum<String> = "ALL BUILD-STAGE DERIVATION INVARIANTS PASS"
     if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }

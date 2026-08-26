@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (full derived boot: toolchain → kernel → QEMU hypervisor all from source; content hash on SHA-256)
+> last_updated: 2026-08-25 (full 256-bit hex content addresses + NESTED store via stdlib mkdir; full derived boot chain)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 

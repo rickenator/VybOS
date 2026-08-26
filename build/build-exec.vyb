@@ -115,8 +115,8 @@ main()<Int> -> {
     // 4. on-disk spot-check: the nginx .meta.json + .src land where the
     //    closure-aware identity says they should.
     nreal<Int> = closure_real(des, "nginx")
-    npath<String> = storeDir + "/" + nreal.to_string() + "-nginx-1.26.2.meta.json"
-    nsrc<String> = storeDir + "/" + nreal.to_string() + "-nginx-1.26.2.src"
+    npath<String> = storeDir + "/" + nreal.to_string() + "/nginx-1.26.2.meta.json"
+    nsrc<String> = storeDir + "/" + nreal.to_string() + "/nginx-1.26.2.src"
     fails = fails + check(nreal > 0, "nginx has a positive closure-real identity")
     rawN<String> = read_flat(npath)
     fails = fails + check(substr_has(rawN, "\"name\": \"nginx\""), "nginx .meta.json exists on disk")

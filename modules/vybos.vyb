@@ -101,26 +101,13 @@ new_spec(system<String>)<SystemSpec> -> {
 // inputs*. M0 faked it (hash of declared name/version); M1 hashes the REAL
 // fetched source bytes plus identity, so a content change yields a new path.
 
-// Content-address by actual source bytes + identity, now backed by the stdlib
-// SHA-256 (Vyb #195 Item 2) instead of the old FNV-1a stand-in. We fold the
-// first 60 bits (15 hex chars) of the SHA-256 digest into a non-negative Int
-// store ID — same Int interface as before (no call-site churn), but the hashing
-// is now a real cryptographic digest, collision-safe to 2^60. A full 256-bit
-// hex store path (Nix-style) is a simple follow-on.
+// Content-address by actual source bytes + identity, backed by the stdlib
+// SHA-256 (Vyb #195 Item 2). Returns the FULL 256-bit digest as a lowercase
+// hex String — collision-safe, Nix-style content address. Store paths become
+// `store/<64-hex>/<name>-<version>...`.
 share(all)
-content_hash(bytes<String>, name<String>, version<String>)<Int> -> {
-    hx<String> = sha256(name + ":" + version + ":" + bytes)
-    n<Int> = 0
-    m<Int> = 15   // 15 hex chars = 60 bits, fits a non-negative i64
-    for (i in 0..m-1) {
-        c<Int> = hx.char_at(i)
-        v<Int> = 0
-        if (c >= 48 && c <= 57) { v = c - 48 }
-        else if (c >= 97 && c <= 102) { v = c - 87 }
-        else if (c >= 65 && c <= 70) { v = c - 55 }
-        n = n * 16 + v
-    }
-    return n
+content_hash(bytes<String>, name<String>, version<String>)<String> -> {
+    return sha256(name + ":" + version + ":" + bytes)
 }
 
 // Write bytes into the store. FLAT single-file layout for M1: the runtime has

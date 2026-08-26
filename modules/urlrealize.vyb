@@ -76,7 +76,7 @@ realize_spec_url(storeDir<String>, spec<SystemSpec>)<UrlRealizeResult> -> {
             u2<UrlSplit> = url_split(pkg.source)
             match (fetch_url(u2)) {
                 bytes -> {
-                    ch<Int> = content_hash(bytes, nm, pkg.version)
+                    ch<String> = content_hash(bytes, nm, pkg.version)
                     deps<Vec<Dep>> = pkg.deps
                     ij<String> = meta_inputs(pkgs, recs, deps)
                     if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {

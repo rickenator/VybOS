@@ -86,8 +86,8 @@ main()<Int> -> {
 
     // 3. on-disk: .meta.json + .src exist and record the real HTTPS URL.
     nr<Int> = closure_real(spec, name)
-    sp<String> = storeDir + "/" + nr.to_string() + "-" + name + "-" + ver + ".meta.json"
-    ss<String> = storeDir + "/" + nr.to_string() + "-" + name + "-" + ver + ".src"
+    sp<String> = storeDir + "/" + nr.to_string() + "/" + name + "-" + ver + ".meta.json"
+    ss<String> = storeDir + "/" + nr.to_string() + "/" + name + "-" + ver + ".src"
     raw<String> = read_flat(sp)
     fails = fails + check(nr > 0, "positive closure identity")
     fails = fails + check(substr_has(raw, "\"source\": \"" + src + "\""), "meta records the real HTTPS source URL")

@@ -124,8 +124,8 @@ main()<Int> -> {
     for (k in 0..des.pkgs.len()-1) {
         p<Pkg> = des.pkgs.get(k)
         real<Int> = closure_real(des, p.name)
-        mp<String> = storeDir + "/" + real.to_string() + "-" + p.name + "-" + p.version + ".meta.json"
-        sp<String> = storeDir + "/" + real.to_string() + "-" + p.name + "-" + p.version + ".src"
+        mp<String> = storeDir + "/" + real.to_string() + "/" + p.name + "-" + p.version + ".meta.json"
+        sp<String> = storeDir + "/" + real.to_string() + "/" + p.name + "-" + p.version + ".src"
         rawM<String> = read_flat(mp)
         fails = fails + check(real > 0, p.name + " has a positive closure-real identity")
         fails = fails + check(substr_has(rawM, "\"name\": \"" + p.name + "\""), p.name + " .meta.json exists on disk")

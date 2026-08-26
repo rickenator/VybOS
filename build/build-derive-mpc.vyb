@@ -58,12 +58,12 @@ is_ar_archive(b<String>)<Bool> -> {
 
 // fetch a URL's bytes over verified TLS ("": failure) + realize into store.
 fetch_realize(storeDir<String>, url<String>, name<String>, ver<String>,
-              tag<String>, ext<String>)<Int> -> {
+              tag<String>, ext<String>)<String> -> {
     u<UrlSplit> = url_split(url)
     r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
-    if (r.status != 200) { return 0 }
-    ca<Int> = content_hash(r.body, name, ver)
-    if (!write_flat(storeDir + "/" + ca.to_string() + "-" + name + "-" + ver + "-" + tag + ext, r.body)) { return 0 }
+    if (r.status != 200) { return "" }
+    ca<String> = content_hash(r.body, name, ver)
+    if (!write_flat(storeDir + "/" + ca + "-" + name + "-" + ver + "-" + tag + ext, r.body)) { return "" }
     return ca
 }
 
@@ -82,16 +82,16 @@ main()<Int> -> {
     fails<Int> = 0
 
     // 1. fetch + realize all three sources.
-    gCA<Int> = fetch_realize(storeDir, gUrl, gname, gver, "src", ".tar.xz")
-    fails = fails + check(gCA > 0, "gmp source fetched + realized (" + gCA.to_string() + ")")
-    mCA<Int> = fetch_realize(storeDir, mUrl, mname, mver, "src", ".tar.xz")
-    fails = fails + check(mCA > 0, "mpfr source fetched + realized (" + mCA.to_string() + ")")
-    cCA<Int> = fetch_realize(storeDir, cUrl, cname, cver, "src", ".tar.gz")
-    fails = fails + check(cCA > 0, "mpc source fetched + realized (" + cCA.to_string() + ")")
+    gCA<String> = fetch_realize(storeDir, gUrl, gname, gver, "src", ".tar.xz")
+    fails = fails + check(gCA.len() > 0, "gmp source fetched + realized (" + gCA + ")")
+    mCA<String> = fetch_realize(storeDir, mUrl, mname, mver, "src", ".tar.xz")
+    fails = fails + check(mCA.len() > 0, "mpfr source fetched + realized (" + mCA + ")")
+    cCA<String> = fetch_realize(storeDir, cUrl, cname, cver, "src", ".tar.gz")
+    fails = fails + check(cCA.len() > 0, "mpc source fetched + realized (" + cCA + ")")
 
-    gSrc<String> = storeDir + "/" + gCA.to_string() + "-" + gname + "-" + gver + "-src.tar.xz"
-    mSrc<String> = storeDir + "/" + mCA.to_string() + "-" + mname + "-" + mver + "-src.tar.xz"
-    cSrc<String> = storeDir + "/" + cCA.to_string() + "-" + cname + "-" + cver + "-src.tar.gz"
+    gSrc<String> = storeDir + "/" + gCA + "-" + gname + "-" + gver + "-src.tar.xz"
+    mSrc<String> = storeDir + "/" + mCA + "-" + mname + "-" + mver + "-src.tar.xz"
+    cSrc<String> = storeDir + "/" + cCA + "-" + cname + "-" + cver + "-src.tar.gz"
 
     // 2. build gmp dependency into the scratch prefix (absolute $P, captured BEFORE cd).
     gb<String> = "P=\"$PWD/" + buildRoot + "/gmp-pfx\" && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\"" +
@@ -120,23 +120,23 @@ main()<Int> -> {
     if (lib.len() < 1000) { lib = read_flat(buildRoot + "/" + cname + "-" + cver + "/.libs/libmpc.a") } // fallback: top-level
     fails = fails + check(lib.len() > 100000, "built libmpc.a non-trivial (" + lib.len().to_string() + " bytes)")
     fails = fails + check(is_ar_archive(lib), "libmpc.a is a valid ar archive")
-    outCA<Int> = content_hash(lib, cname, cver)
-    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + cname + "-" + cver + ".bin"
-    fails = fails + check(write_flat(oBin, lib), "built libmpc.a content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+    outCA<String> = content_hash(lib, cname, cver)
+    oBin<String> = storeDir + "/" + outCA + "-" + cname + "-" + cver + ".bin"
+    fails = fails + check(write_flat(oBin, lib), "built libmpc.a content-addressed into store (.bin, ca " + outCA + ")")
 
     hdr<String> = read_flat(buildRoot + "/" + cname + "-" + cver + "/src/mpc.h")
     fails = fails + check(hdr.len() > 1000, "mpc.h header produced (" + hdr.len().to_string() + " bytes)")
 
     // 6. metadata (records both dependency output hashes).
     meta<String> = "{\"name\": \"" + cname + "\", \"version\": \"" + cver +
-        "\", \"sourceUrl\": \"" + cUrl + "\", \"sourceContentHash\": " + cCA.to_string() +
-        ", \"deps\": [\"gmp:" + gver + "\", \"mpfr:" + mver + "\"]" +
-        ", \"gmpSourceContentHash\": " + gCA.to_string() + ", \"mpfrSourceContentHash\": " + mCA.to_string() +
-        ", \"buildRecipe\": \"configure --with-gmp=<pfx> --with-mpfr=<pfx> --disable-shared && make\", \"outputContentHash\": " + outCA.to_string() +
-        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + cname + "-" + cver + ".bin\"}"
+        "\", \"sourceUrl\": \"" + cUrl + "\", \"sourceContentHash\": \"" + cCA +
+        "\", \"deps\": [\"gmp:" + gver + "\", \"mpfr:" + mver + "\"]" +
+        "\", \"gmpSourceContentHash\": \"" + gCA + "\", \"mpfrSourceContentHash\": \"" + mCA +
+        "\", \"buildRecipe\": \"configure --with-gmp=<pfx> --with-mpfr=<pfx> --disable-shared && make\", \"outputContentHash\": \"" + outCA +
+        "\", \"storePath\": \"/vyb/store/" + outCA + "-" + cname + "-" + cver + ".bin\"}"
     mPath<String> = storeDir + "/" + cname + "-" + cver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
-    println("  output .bin : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  output .bin : " + oBin + "  (ca " + outCA + ")")
     println("  deps        : gmp " + gver + " + mpfr " + mver + " (scratch; store-input DAG is a follow-on)")
     println("  meta        : " + mPath)
     println("")

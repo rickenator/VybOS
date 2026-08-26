@@ -89,11 +89,11 @@ main()<Int> -> {
     r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
     fails = fails + check(r.status == 200, "fetched kernel source over verified TLS (" + r.status.to_string() + ")")
     if (r.status != 200) { println("  abort: fetch failed"); return 1 }
-    srcCA<Int> = content_hash(r.body, name, ver)
-    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    srcCA<String> = content_hash(r.body, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA + "-" + name + "-" + ver + "-src.tar.xz"
     fails = fails + check(r.body.len() > 100000000, "kernel source tarball non-trivial (" + r.body.len().to_string() + " bytes)")
     fails = fails + check(write_flat(sSrc, r.body), "kernel source content-addressed into store (.src)")
-    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+    println("  source .src : " + sSrc + "  (ca " + srcCA + ")")
 
     kbuild<String> = buildRoot + "/kbuild"
 
@@ -148,16 +148,16 @@ main()<Int> -> {
     bz<String> = read_flat(kbuild + "/arch/x86/boot/bzImage")
     fails = fails + check(bz.len() > 5000000, "built bzImage non-trivial (" + bz.len().to_string() + " bytes)")
     fails = fails + check(has_hdrs(bz), "bzImage carries the Linux boot-protocol 'HdrS' signature (0x202)")
-    outCA<Int> = content_hash(bz, name, ver)
-    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + "-bzImage.bin"
-    fails = fails + check(write_flat(oBin, bz), "built bzImage content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+    outCA<String> = content_hash(bz, name, ver)
+    oBin<String> = storeDir + "/" + outCA + "-" + name + "-" + ver + "-bzImage.bin"
+    fails = fails + check(write_flat(oBin, bz), "built bzImage content-addressed into store (.bin, ca " + outCA + ")")
 
     // 4. metadata.
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
-        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
-        ", \"buildRecipe\": \"build derived toolchain (gmp/mpfr/mpc/binutils/gcc 13.2.0 C-only) in-scratch; make O=<kbuild> defconfig + dep-trims + bzImage with CC=<derived-gcc>\", \"outputContentHash\": " + outCA.to_string() +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA +
+        ", \"buildRecipe\": \"build derived toolchain (gmp/mpfr/mpc/binutils/gcc 13.2.0 C-only) in-scratch; make O=<kbuild> defconfig + dep-trims + bzImage with CC=<derived-gcc>\", \"outputContentHash\": " + outCA +
         ", \"toolchain\": \"DERIVED gcc 13.2.0 (C-only) + derived binutils 2.43; host cc only bootstraps the toolchain\", \"format\": \"Linux x86 bzImage (boot-protocol HdrS@0x202)\"" +
-        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-bzImage.bin\"}"
+        ", \"storePath\": \"/vyb/store/" + outCA + "-" + name + "-" + ver + "-bzImage.bin\"}"
     mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
 
@@ -173,7 +173,7 @@ main()<Int> -> {
     bootRc<Int> = run("./tools/vybos-run --runtime qemu --kernel \"" + bzPath + "\" --test")
     fails = fails + check(bootRc == 0, "derived kernel BOOTS the VybOS rootfs to VYBOS_READY=1 in QEMU (dir via VYBOS_QEMU)" + bootRc.to_string())
 
-    println("  output bz  : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  output bz  : " + oBin + "  (ca " + outCA + ")")
     println("  toolchain   : DERIVED gcc 13.2.0 + binutils 2.43 (built in-scratch)")
     println("  meta        : " + mPath)
     println("")

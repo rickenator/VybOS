@@ -132,14 +132,15 @@ mirroring Nix derivations.
   build timestamp/hostname. hello-vyb certifies the DERIVATION machinery is
   byte-deterministic for a deterministic compile; hardening the real builds for
   full reprobuilds is a follow-on.
-- **Content address is SHA-256-backed**: `modules/vybos.vyb` `content_hash`
-  folds 60 bits of the stdlib SHA-256 digest into a non-negative `Int` store ID
-  (no more FNV-1a). A full 256-bit hex store path (Nix-style) and a nested
-  store are simple follow-ons now that stdlib SHA-256 + `mkdir` exist (Vyb #195
-  Items 1,2).
-- **Flat store currently**: single-file `.bin`/`.src`; stdlib `mkdir` (Vyb #195
-  Item 1) has landed, so migrating to a nested store / full-tree staging is the
-  follow-on.
+- **Content address is the full 256-bit SHA-256 hex `String`**: `content_hash`
+  returns the 64-char lowercase digest (Nix-style, collision-safe) and the
+  store is NESTED — `realize_one` + the derive slices create
+  `store/<hexca>/<name>-<ver>.{src,bin,meta.json}` via stdlib `fs::mkdir`
+  (Vyb #195 Items 1&2). No flat store, no host `mkdir -p`, no FNV-1a.
+- **Nested store**: each derivation groups its files under
+  `store/<hexca>/<name>-<ver>.{src,bin,meta.json}`; full multi-file TREE staging
+  (e.g. the toolchain install / derived QEMU prefix) uses the same
+  `fs::mkdir` + per-file writes.
 - **Kernel build deps must be compiled, not skipped**: x86_64 objtool is
   unconditional and links libelf; kconfig regenerates its lexer/parser with
   flex/bison. The kernel derivation builds bison/flex/elfutils in-scratch.

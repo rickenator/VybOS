@@ -57,12 +57,12 @@ is_ar_archive(b<String>)<Bool> -> {
 
 // fetch a URL's bytes over verified TLS ("" on failure) + realize into store.
 fetch_realize(storeDir<String>, url<String>, name<String>, ver<String>,
-              tag<String>)<Int> -> {
+              tag<String>)<String> -> {
     u<UrlSplit> = url_split(url)
     r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
-    if (r.status != 200) { return 0 }
-    ca<Int> = content_hash(r.body, name, ver)
-    if (!write_flat(storeDir + "/" + ca.to_string() + "-" + name + "-" + ver + "-" + tag + ".tar.xz", r.body)) { return 0 }
+    if (r.status != 200) { return "" }
+    ca<String> = content_hash(r.body, name, ver)
+    if (!write_flat(storeDir + "/" + ca + "-" + name + "-" + ver + "-" + tag + ".tar.xz", r.body)) { return "" }
     return ca
 }
 
@@ -79,13 +79,13 @@ main()<Int> -> {
     fails<Int> = 0
 
     // 1. fetch + realize both sources.
-    gCA<Int> = fetch_realize(storeDir, gUrl, gname, gver, "src")
-    fails = fails + check(gCA > 0, "gmp source fetched + realized (" + gCA.to_string() + ")")
-    mCA<Int> = fetch_realize(storeDir, mUrl, mname, mver, "src")
-    fails = fails + check(mCA > 0, "mpfr source fetched + realized (" + mCA.to_string() + ")")
+    gCA<String> = fetch_realize(storeDir, gUrl, gname, gver, "src")
+    fails = fails + check(gCA.len() > 0, "gmp source fetched + realized (" + gCA + ")")
+    mCA<String> = fetch_realize(storeDir, mUrl, mname, mver, "src")
+    fails = fails + check(mCA.len() > 0, "mpfr source fetched + realized (" + mCA + ")")
 
-    gSrc<String> = storeDir + "/" + gCA.to_string() + "-" + gname + "-" + gver + "-src.tar.xz"
-    mSrc<String> = storeDir + "/" + mCA.to_string() + "-" + mname + "-" + mver + "-src.tar.xz"
+    gSrc<String> = storeDir + "/" + gCA + "-" + gname + "-" + gver + "-src.tar.xz"
+    mSrc<String> = storeDir + "/" + mCA + "-" + mname + "-" + mver + "-src.tar.xz"
 
     // 2. build the gmp dependency into a scratch prefix. Capture $P (absolute
     //    prefix) BEFORE any cd — $PWD after cd would point into the source dir.
@@ -107,9 +107,9 @@ main()<Int> -> {
     lib<String> = read_flat(buildRoot + "/" + mname + "-" + mver + "/src/.libs/libmpfr.a")
     fails = fails + check(lib.len() > 300000, "built libmpfr.a non-trivial (" + lib.len().to_string() + " bytes)")
     fails = fails + check(is_ar_archive(lib), "libmpfr.a is a valid ar archive")
-    outCA<Int> = content_hash(lib, mname, mver)
-    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + mname + "-" + mver + ".bin"
-    fails = fails + check(write_flat(oBin, lib), "built libmpfr.a content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+    outCA<String> = content_hash(lib, mname, mver)
+    oBin<String> = storeDir + "/" + outCA + "-" + mname + "-" + mver + ".bin"
+    fails = fails + check(write_flat(oBin, lib), "built libmpfr.a content-addressed into store (.bin, ca " + outCA + ")")
 
     hdr<String> = read_flat(buildRoot + "/" + mname + "-" + mver + "/src/mpfr.h")
     fails = fails + check(hdr.len() > 1000, "mpfr.h header produced (" + hdr.len().to_string() + " bytes)")
@@ -117,13 +117,13 @@ main()<Int> -> {
     // 5. metadata (records the gmp dependency output hash).
     depGmp<String> = "gmp:" + gver
     meta<String> = "{\"name\": \"" + mname + "\", \"version\": \"" + mver +
-        "\", \"sourceUrl\": \"" + mUrl + "\", \"sourceContentHash\": " + mCA.to_string() +
-        ", \"deps\": [\"" + depGmp + "\"], \"gmpSourceContentHash\": " + gCA.to_string() +
-        ", \"buildRecipe\": \"configure --with-gmp=<pfx> --disable-shared && make\", \"outputContentHash\": " + outCA.to_string() +
-        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + mname + "-" + mver + ".bin\"}"
+        "\", \"sourceUrl\": \"" + mUrl + "\", \"sourceContentHash\": \"" + mCA +
+        "\", \"deps\": [\"" + depGmp + "\"], \"gmpSourceContentHash\": \"" + gCA +
+        "\", \"buildRecipe\": \"configure --with-gmp=<pfx> --disable-shared && make\", \"outputContentHash\": \"" + outCA +
+        "\", \"storePath\": \"/vyb/store/" + outCA + "-" + mname + "-" + mver + ".bin\"}"
     mPath<String> = storeDir + "/" + mname + "-" + mver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
-    println("  output .bin : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  output .bin : " + oBin + "  (ca " + outCA + ")")
     println("  deps        : gmp " + gver + " (scratch; store-input DAG is a follow-on)")
     println("  meta        : " + mPath)
     println("")

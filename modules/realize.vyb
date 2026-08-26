@@ -22,6 +22,7 @@
 import collections
 import http::{http_get_full, HttpResponse}
 import io
+import fs::{mkdir}
 import vybos::{content_hash}
 import plan::{Pkg, Dep, SystemSpec, RealRec,
               resolve, real_table, real_of, find_pkg,
@@ -92,12 +93,16 @@ meta_inputs(pkgs<Vec<Pkg>>, recs<Vec<RealRec>>, deps<Vec<Dep>>)<String> -> {
     return s
 }
 
-// write source + .meta.json for one realised derivation (flat store: two
-// files, no dirs to create). Returns true on both writes succeeding.
+// write source + .meta.json for one realised derivation into a NESTED store:
+// storeDir/<real>/<name>-<version>.{src,meta.json}, creating the per-real dir
+// with stdlib mkdir (Vyb #195 Item 1) — no more host mkdir -p or flat store.
+// Returns true on both writes succeeding.
 share(all)
-realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<Int>,
+realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<String>,
             real<Int>, inputsJson<String>)<Bool> -> {
-    base<String> = storeDir + "/" + real.to_string() + "-" + pkg.name + "-" + pkg.version
+    d<String> = storeDir + "/" + real.to_string()
+    match (mkdir(d)) { b -> {} ? -> {} }   // idempotent; open_write below reveals a real failure
+    base<String> = d + "/" + pkg.name + "-" + pkg.version
     // source blob
     okS<Bool> = false
     match (open_write(base + ".src")) {
@@ -106,12 +111,13 @@ realize_one(storeDir<String>, pkg<Pkg>, bytes<String>, contentHash<Int>,
     }
     if (!okS) { return false }
     // .drv-style metadata
+    sp<String> = "/vyb/store/" + real.to_string() + "/" + pkg.name + "-" + pkg.version
     meta<String> = "{\"name\": \"" + pkg.name +
         "\", \"version\": \"" + pkg.version +
         "\", \"source\": \"" + pkg.source +
-        "\", \"contentHash\": " + contentHash.to_string() +
-        ", \"closureReal\": " + real.to_string() +
-        ", \"storePath\": \"/vyb/store/" + real.to_string() + "-" + pkg.name + "-" + pkg.version +
+        "\", \"contentHash\": \"" + contentHash +
+        "\", \"closureReal\": " + real.to_string() +
+        ", \"storePath\": \"" + sp +
         "\", \"inputs\": " + inputsJson + "}"
     okM<Bool> = false
     match (open_write(base + ".meta.json")) {
@@ -157,7 +163,7 @@ realize_spec(storeDir<String>, spec<SystemSpec>)<RealizeResult> -> {
                 failed = failed + 1
             } else {
                 bytes<String> = r.body
-                ch<Int> = content_hash(bytes, nm, pkg.version)
+                ch<String> = content_hash(bytes, nm, pkg.version)
                 deps<Vec<Dep>> = pkg.deps
                 ij<String> = meta_inputs(pkgs, recs, deps)
                 if (realize_one(storeDir, pkg, bytes, ch, real, ij)) {
