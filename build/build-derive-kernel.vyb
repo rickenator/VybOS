@@ -1,30 +1,34 @@
 // build-derive-kernel.vyb — VybOS TOOLCHAIN T3: the Linux kernel as a
-// build-stage derivation. The FLAGSHIP: a content-addressed bzImage derived
-// from source, replacing the fetched Alpine netboot vmlinuz stop-gap, and
-// giving issue #4's build.plan a real linux-<ver>-vyb package.
+// build-stage derivation, compiled by the DERIVED C toolchain. The FLAGSHIP: a
+// content-addressed bzImage built from source with a compiler that is ITSELF
+// derived (gmp/mpfr/mpc/binutils/gcc), replacing the fetched Alpine netboot
+// vmlinuz stop-gap, and giving issue #4's build.plan a real linux-<ver>-vyb
+// package.
 //
-// Pipeline (all vybey + a gated host build action):
-//   fetch linux-6.6 source over verified TLS (.tar.xz, 140MB)
-//   realize the SOURCE content-addressed into the flat store
-//   build OUT-OF-TREE (O=<kbuild>) so the source tree stays clean:
-//     cd linux-<ver> && make O=<kbuild> defconfig
-//     scripts/config --file <kbuild>/.config -d <missing-host-dep symbols>
-//     make O=<kbuild> olddefconfig      (resolve config deps)
-//     make O=<kbuild> -j<N> bzImage
-//   content-address the BUILT arch/x86/boot/bzImage (.bin) + .meta.json
+// Pipeline (all vybey + gated host build actions):
+//   fetch linux-6.6 source over verified TLS (.tar.xz, 140MB) -> realize .src
+//   build host build-tools in-scratch (flex+bison for kconfig parsers,
+//     elfutils/libelf for objtool — see notes) into $P
+//   build the DERIVED toolchain in-scratch into $TC (gmp->mpfr->mpc->binutils
+//     ->gcc 13.2.0 C-only), then compile the kernel with CC=.../gcc
+//   kernel OUT-OF-TREE (O=<kbuild>): defconfig + dep-trims + olddefconfig
+//     + bzImage
+//   content-address arch/x86/boot/bzImage (.bin) + .meta.json
 //
-// Host-dep trims (godzilla lacks them; defconfig enables them by default):
-//   - no pahole/dwarves -> -d DEBUG_INFO -d DEBUG_INFO_BTF (+GDB_SCRIPTS)
-//     (BTF/debug needs pahole; dropping it also massively speeds the build)
-//   - no libelf/libdw headers -> -d STACK_VALIDATION -d UNWINDER_ORC
-//     -e UNWINDER_FRAME_POINTER (objtool, the ORC/STACK_VALIDATION machinery,
-//     links libelf; frame-pointer unwinder needs no objtool)
+// Why these build deps must be COMPILED, not skipped:
+//   - x86_64 kernel -> objtool is unconditional (CONFIG_OBJTOOL arch-selected)
+//     and links -lelf => need elfutils' libelf (headers+lib); no config trick.
+//   - kconfig regenerates scripts/kconfig/{lexer.lex.c,parser.tab.c} from
+//     {lexer.l,parser.y} at defconfig time; 6.6 ships no generated parsers =>
+//     need flex + bison on PATH.
+//   - no pahole => drop DEBUG_INFO/BTF; no openssl => drop MODULE_SIG; use the
+//     frame-pointer unwinder (no objtool tables) via UNWINDER_FRAME_POINTER.
+//   - flex's git archive omits configure+scan.c => use its RELEASE tarball,
+//     fetched by host curl -L (the GitHub asset redirect is cross-host).
 //
-// bzImage authenticity: not a plain ELF — check the Linux boot protocol
-// signature "HdrS" at offset 0x202 in the setup header.
-// NOTE: built with the HOST gcc for now; swapping in the derived gcc
-// (build-derive-gcc.vyb output as CC) is a one-line override — T2 proved the
-// derived compiler compiles real C. Flat store, binary-safe IO.
+// Path hygiene: absolute $B scratch base captured BEFORE any cd (relative
+// buildRoot paths after cd'ing into subdirs break curl -o and O=). Flat store,
+// binary-safe IO, inclusive ranges.
 import collections
 import io::{open_read, read_all, close, open_write, write_str}
 import process::{exec_run}
@@ -77,7 +81,7 @@ main()<Int> -> {
     ver<String> = "6.6"
     srcUrl<String> = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-" + ver + ".tar.xz"
 
-    println("=== VybOS TOOLCHAIN T3: Linux kernel bzImage as a build-stage derivation ===\n")
+    println("=== VybOS TOOLCHAIN T3: Linux kernel bzImage built with the DERIVED gcc ===\n")
     fails<Int> = 0
 
     // 1. fetch + realize the kernel source (140MB — verified the client survives it).
@@ -91,47 +95,54 @@ main()<Int> -> {
     fails = fails + check(write_flat(sSrc, r.body), "kernel source content-addressed into store (.src)")
     println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
 
-    // 2. build bison + flex in-scratch (kconfig needs them; the 6.6 tarball
-    //    does NOT ship generated lexer.lex.c/parser.tab.c), then the kernel
-    //    OUT-OF-TREE (O=<kbuild>) with the missing-host-dep trims.
     kbuild<String> = buildRoot + "/kbuild"
-    // bison+flex built into a scratch prefix so `make defconfig` can generate
-    // kconfig's lexer/parser. bison via verified-TLS-friendly osuosl; flex uses
-    // its RELEASE tarball (git archives omit configure + scan.c), fetched by
-    // host curl since the GitHub release-asset redirect is cross-host.
-    // `$B` is the ABSOLUTE scratch base captured BEFORE any `cd`, so paths stay
-    // correct after the recipe cd's into bison/flex/linux build dirs.
-    btools<String> = "B=\"$PWD/" + buildRoot + "\" && P=\"$B/bt-pfx\" && mkdir -p \"$P\"" +
+
+    // 2. Build the whole tower in one gated host action: host build-tools into
+    //    $P, then the DERIVED toolchain into $TC, then the kernel with CC=/gcc.
+    //    `$B` is the ABSOLUTE scratch base captured BEFORE any `cd`.
+    btools<String> = "B=\"$PWD/" + buildRoot + "\" && P=\"$B/bt-pfx\" && TC=\"$B/tc-pfx\" && mkdir -p \"$P\" \"$TC\"" +
+        // --- host build-tools: bison + flex (kconfig parsers), elfutils (libelf for objtool)
         " && curl -sSL -o \"$B/bison.tar.xz\" \"https://ftp.osuosl.org/pub/gnu/bison/bison-3.8.2.tar.xz\"" +
         " && tar xJf \"$B/bison.tar.xz\" -C \"$B\"" +
         " && cd \"$B/bison-3.8.2\" && ./configure --prefix=\"$P\" --disable-nls && make -j20 && make install" +
         " && curl -sSL -L -o \"$B/flex.tar.gz\" \"https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz\"" +
         " && tar xzf \"$B/flex.tar.gz\" -C \"$B\"" +
         " && cd \"$B/flex-2.6.4\" && ./configure --prefix=\"$P\" && make -j20 && make install" +
-        // objtool is unconditional on x86_64 and links -lelf -> build elfutils
-        // (provides libelf.h/gelf.h + libelf.so) into $P and point pkg-config /
-        // LD_LIBRARY_PATH at it so objtool compiles AND runs.
         " && curl -sSL -o \"$B/elfutils.tar.bz2\" \"https://sourceware.org/elfutils/ftp/0.191/elfutils-0.191.tar.bz2\"" +
         " && tar xjf \"$B/elfutils.tar.bz2\" -C \"$B\"" +
         " && cd \"$B/elfutils-0.191\" && ./configure --prefix=\"$P\" --disable-debuginfod --disable-libdebuginfod --disable-nls --disable-doc" +
         " && make -j20 && make install" +
-        " && export PATH=\"$P/bin:$PATH\" PKG_CONFIG_PATH=\"$P/lib/pkgconfig\" LD_LIBRARY_PATH=\"$P/lib\" " +
+        " && export PATH=\"$P/bin:$PATH\" PKG_CONFIG_PATH=\"$P/lib/pkgconfig\" LD_LIBRARY_PATH=\"$P/lib\"" +
+        // --- build the DERIVED toolchain into $TC (host cc bootstraps it)
+        " && curl -sSL -o \"$B/gmp.tar.xz\" \"https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz\"" +
+        " && tar xJf \"$B/gmp.tar.xz\" -C \"$B\" && cd \"$B/gmp-6.3.0\" && ./configure --prefix=\"$TC\" --disable-shared && make -j20 && make install" +
+        " && curl -sSL -o \"$B/mpfr.tar.xz\" \"https://www.mpfr.org/mpfr-4.2.1/mpfr-4.2.1.tar.xz\"" +
+        " && tar xJf \"$B/mpfr.tar.xz\" -C \"$B\" && cd \"$B/mpfr-4.2.1\" && ./configure --prefix=\"$TC\" --with-gmp=\"$TC\" --disable-shared && make -j20 && make install" +
+        " && curl -sSL -o \"$B/mpc.tar.gz\" \"https://www.multiprecision.org/downloads/mpc-1.3.1.tar.gz\"" +
+        " && tar xzf \"$B/mpc.tar.gz\" -C \"$B\" && cd \"$B/mpc-1.3.1\" && ./configure --prefix=\"$TC\" --with-gmp=\"$TC\" --with-mpfr=\"$TC\" --disable-shared && make -j20 && make install" +
+        " && mkdir -p \"$B/btb\" && curl -sSL -o \"$B/binutils.tar.xz\" \"https://ftp.osuosl.org/pub/gnu/binutils/binutils-2.43.tar.xz\"" +
+        " && tar xJf \"$B/binutils.tar.xz\" -C \"$B\" && cd \"$B/btb\" && ../binutils-2.43/configure --prefix=\"$TC\" --disable-nls --disable-werror --disable-shared && make -j20 MAKEINFO=true && make install MAKEINFO=true" +
+        // derived as/ld/ar now on PATH; build gcc with host cc driving derived binutils
+        " && export PATH=\"$TC/bin:$PATH\" LD_LIBRARY_PATH=\"$TC/lib:$P/lib\"" +
+        " && mkdir -p \"$B/gccb\" && curl -sSL -o \"$B/gcc.tar.xz\" \"https://ftp.osuosl.org/pub/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz\"" +
+        " && tar xJf \"$B/gcc.tar.xz\" -C \"$B\" && cd \"$B/gccb\" && ../gcc-13.2.0/configure --prefix=\"$TC\" --enable-languages=c --disable-bootstrap --disable-multilib --with-gmp=\"$TC\" --with-mpfr=\"$TC\" --with-mpc=\"$TC\" --disable-nls --disable-werror --disable-shared --disable-libcc1 --disable-libquadmath --disable-libgomp --disable-libatomic --disable-libsanitizer --disable-libvtv --disable-libssp && make -j20 MAKEINFO=true && make install MAKEINFO=true" +
+        // --- compile the DERIVED kernel with the DERIVED gcc, out-of-tree
+        " && export CC=\"$TC/bin/gcc\" HOSTCC=\"$TC/bin/gcc\"" +
         " && cd \"$B/linux-" + ver + "\" && make O=\"$B/kbuild\" defconfig" +
         " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
         " -d DEBUG_INFO -d DEBUG_INFO_BTF -d GDB_SCRIPTS -d STACK_VALIDATION" +
         " -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
         " -d OBJTOOL -d MODULE_SIG -d SYSTEM_TRUSTED_KEYS -d SYSTEM_REVOCATION_KEYS" +
         " && make O=\"$B/kbuild\" olddefconfig" +
-        // objtool builds iff CONFIG_OBJTOOL=y, which ORC/STACK_VALIDATION select
-        // and x86_64's defaults are sticky — force it off a SECOND time so the
-        // frame-pointer unwinder is definitively picked (no libelf needed).
+        // objtool builds iff CONFIG_OBJTOOL=y (arch-selected, sticky) — with
+        // libelf provided it builds fine; keep the second pass for ORC->FP.
         " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
         " -d OBJTOOL -d STACK_VALIDATION -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
         " && make O=\"$B/kbuild\" olddefconfig" +
         " && make O=\"$B/kbuild\" -j20 bzImage"
     prep<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"" +
         " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\" && " + btools
-    fails = fails + check(run(prep) == 0, "bison+flex built; kernel configured (defconfig, dep-trimmed) + built (bzImage)")
+    fails = fails + check(run(prep) == 0, "derived toolchain built; kernel compiled with derived gcc (bzImage)")
 
     // 3. content-address the BUILT bzImage.
     bz<String> = read_flat(kbuild + "/arch/x86/boot/bzImage")
@@ -144,12 +155,13 @@ main()<Int> -> {
     // 4. metadata.
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
         "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
-        ", \"buildRecipe\": \"make O=<kbuild> defconfig + scripts/config dep-trims + make olddefconfig && make bzImage\", \"outputContentHash\": " + outCA.to_string() +
-        ", \"toolchain\": \"host gcc (derived gcc T2 swap = one-line CC override)\", \"format\": \"Linux x86 bzImage (boot-protocol HdrS@0x202)\"" +
+        ", \"buildRecipe\": \"build derived toolchain (gmp/mpfr/mpc/binutils/gcc 13.2.0 C-only) in-scratch; make O=<kbuild> defconfig + dep-trims + bzImage with CC=<derived-gcc>\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"toolchain\": \"DERIVED gcc 13.2.0 (C-only) + derived binutils 2.43; host cc only bootstraps the toolchain\", \"format\": \"Linux x86 bzImage (boot-protocol HdrS@0x202)\"" +
         ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-bzImage.bin\"}"
     mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
     println("  output bz  : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  toolchain   : DERIVED gcc 13.2.0 + binutils 2.43 (built in-scratch)")
     println("  meta        : " + mPath)
     println("")
     sum<String> = "ALL KERNEL TOOLCHAIN-DERIVATION INVARIANTS PASS"

@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (full toolchain derived: gmp/mpfr/mpc/binutils/gcc + Linux kernel bzImage)
+> last_updated: 2026-08-25 (full toolchain derived; kernel boots via derived gcc; content hash on stdlib SHA-256)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -137,14 +137,16 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     registry ceiling with #191. Full bootstrapped C toolchain now derived.
 17. **TOOLCHAIN T3 (Linux kernel)** — `build/build-derive-kernel.vyb`: the
     FLAGSHIP. Fetches `linux-6.6` source (140MB via `cdn.kernel.org`, verified
-    TLS), realizes it, builds OUT-OF-TREE (`O=<kbuild>`) after in-scratch bison
-    + flex (kconfig regenerates its lexer/parser) + elfutils/libelf (objtool is
-    unconditional on x86_64 and links -lelf). Output: content-addressed
-    `linux-6.6-bzImage.bin` (12MB) — a real, bootable kernel (`file`: "Linux
-    kernel x86 boot executable bzImage, version 6.6.0", HdrS boot-protocol
-    signature verified). Built with host gcc; derived-gcc (T2) swap = one-line
-    CC override. The fetched QEMU vmlinuz can now be replaced by a derived
-    kernel.
+    TLS), realizes it, then builds the whole tree in-scratch — bison+flex
+    (kconfig parsers), elfutils/libelf (objtool is unconditional on x86_64 and
+    links -lelf), and the **DERIVED C toolchain** (gmp→mpfr→mpc→binutils→gcc
+    13.2.0) — and compiles the kernel with it (`CC/HOSTCC=<derived gcc>`).
+    Output: content-addressed `linux-6.6-bzImage.bin` (12MB, HdrS boot-header
+    verified). **BOOTS the VybOS rootfs in QEMU to `VYBOS_READY=1`** via
+    `./tools/vybos-run --runtime qemu --kernel <out> --test`; the kernel's own
+    version string shows `gcc (GCC) 13.2.0, GNU ld 2.43` (the derived
+    compiler). The fetched QEMU vmlinuz is now replaceable by a derived kernel —
+    giving build.plan a real `linux-6.6-vyb`.
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -216,10 +218,13 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       compiler bootstrap (chibicc: GEN-1 → GEN-2 via self-recompile), and
       toolchain T0a→T3 (gmp/mpfr/mpc libs + binutils as/ld/ar + gcc C-only — a
       FULL bootstrapped C toolchain — and **the Linux kernel bzImage**, all
-      derived from source; NEXT: swap the derived `linux-6.6-bzImage.bin` for
-      the fetched QEMU vmlinuz in `tools/vybos-run --runtime qemu`, and
-      optionally rebuild the kernel with the derived gcc via `CC` override —
-      giving issue #4's `build.plan` a real `linux-6.6-vyb` package.
+      derived from source. The derived `linux-6.6-bzImage.bin` now REPLACES the
+      fetched QEMU vmlinuz (boots to `VYBOS_READY=1` via `tools/vybos-run
+      --runtime qemu --kernel <out> --test`) and is compiled by the derived gcc
+      — issue #4's `build.plan` has a real `linux-6.6-vyb`. Remaining follow-ons:
+      migrate the content hash to a FULL 256-bit hex store path (now that stdlib
+      SHA-256 + mkdir exist), record reprobuild flags for byte-determinism, and
+      fold the QEMU boot into the derivation.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 

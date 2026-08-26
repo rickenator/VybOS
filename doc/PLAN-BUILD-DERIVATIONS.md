@@ -94,10 +94,14 @@ mirroring Nix derivations.
      **elfutils/libelf** (objtool is UNCONDITIONAL on x86_64 and links `-lelf`;
      no config flag can skip it). Output `linux-6.6-bzImage.bin` (12MB) — a
      real, bootable kernel (`file`: "Linux kernel x86 boot executable bzImage,
-     version 6.6.0"), verified by the `HdrS` boot-protocol signature. Built with
-     the HOST gcc; swapping in the derived gcc (T2) is a one-line `CC`
-     override. NOTE for follow-ons: dodging kernel build deps means compiling
-     them — there is no "just disable it" for libelf/objtool on x86_64.
+     version 6.6.0"), verified by the `HdrS` boot-protocol signature. The slice
+     builds the full DERIVED toolchain in-scratch and compiles the kernel with
+     it (`CC/HOSTCC=<derived gcc>`), so the kernel is built by a derived
+     compiler (its version string reads `gcc (GCC) 13.2.0, GNU ld 2.43`).
+     **Boots the VybOS rootfs to `VYBOS_READY=1` in QEMU** (`tools/vybos-run
+     --runtime qemu --kernel <out> --test`), replacing the fetched vmlinuz.
+     NOTE for follow-ons: dodging kernel build deps means compiling them — there
+     is no "just disable it" for libelf/objtool on x86_64.
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via
@@ -128,9 +132,11 @@ mirroring Nix derivations.
   build timestamp/hostname. hello-vyb certifies the DERIVATION machinery is
   byte-deterministic for a deterministic compile; hardening the real builds for
   full reprobuilds is a follow-on.
-- **Stand-in hash**: content address is still FNV-1a; the stdlib now ships
-  SHA-256 (Vyb #195 Item 2) — migrating the content hash to the real digest is
-  a follow-on (B2 in PLAN_BOOTABLE_IMAGE).
+- **Content address is SHA-256-backed**: `modules/vybos.vyb` `content_hash`
+  folds 60 bits of the stdlib SHA-256 digest into a non-negative `Int` store ID
+  (no more FNV-1a). A full 256-bit hex store path (Nix-style) and a nested
+  store are simple follow-ons now that stdlib SHA-256 + `mkdir` exist (Vyb #195
+  Items 1,2).
 - **Flat store currently**: single-file `.bin`/`.src`; stdlib `mkdir` (Vyb #195
   Item 1) has landed, so migrating to a nested store / full-tree staging is the
   follow-on.
