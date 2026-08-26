@@ -137,10 +137,15 @@ mirroring Nix derivations.
   store is NESTED — `realize_one` + the derive slices create
   `store/<hexca>/<name>-<ver>.{src,bin,meta.json}` via stdlib `fs::mkdir`
   (Vyb #195 Items 1&2). No flat store, no host `mkdir -p`, no FNV-1a.
-- **Nested store**: each derivation groups its files under
-  `store/<hexca>/<name>-<ver>.{src,bin,meta.json}`; full multi-file TREE staging
-  (e.g. the toolchain install / derived QEMU prefix) uses the same
-  `fs::mkdir` + per-file writes.
+- **The store is cleanly NESTED (flat cleared 2026-08-25)**: `realize_one` +
+  the derive slices write `store/<hexca>/<name>-<ver>.{src,bin,meta.json}` via
+  stdlib `fs::mkdir`; obsolete flat `store/<ca>-<name>-*.{bin,src}` files are
+  gone. `hello-vyb` + the packaged QEMU tree + the deterministic kernel are
+  nested entries; the framework's closure entries key by `real` (Int).
+- **Byte-deterministic kernel**: the kernel derivation fixes
+  `KBUILD_BUILD_TIMESTAMP/USER/HOST` + `SOURCE_DATE_EPOCH` + gcc
+  `-frandom-seed`/`-fno-guess-branch-probability`, builds twice clean, and
+  asserts identical bzImage (proven, not assumed).
 - **Kernel build deps must be compiled, not skipped**: x86_64 objtool is
   unconditional and links libelf; kconfig regenerates its lexer/parser with
   flex/bison. The kernel derivation builds bison/flex/elfutils in-scratch.

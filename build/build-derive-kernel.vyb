@@ -31,6 +31,7 @@
 // binary-safe IO, inclusive ranges.
 import collections
 import io::{open_read, read_all, close, open_write, write_str}
+import fs::{mkdir}
 import process::{exec_run}
 import https::{https_get_full_verified}
 import http::{HttpResponse}
@@ -97,6 +98,18 @@ main()<Int> -> {
 
     kbuild<String> = buildRoot + "/kbuild"
 
+    // kconfig configure + dep-trim fragment (re-run per build) — uses $B (absolute)
+    // so it's cwd-safe; ver is baked. Build twice for a byte-determinism proof.
+    kcfgOp<String> = "cd \"$B/linux-" + ver + "\" && make O=\"$B/kbuild\" defconfig" +
+        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
+        " -d DEBUG_INFO -d DEBUG_INFO_BTF -d GDB_SCRIPTS -d STACK_VALIDATION" +
+        " -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
+        " -d OBJTOOL -d MODULE_SIG -d SYSTEM_TRUSTED_KEYS -d SYSTEM_REVOCATION_KEYS" +
+        " && make O=\"$B/kbuild\" olddefconfig" +
+        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
+        " -d OBJTOOL -d STACK_VALIDATION -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
+        " && make O=\"$B/kbuild\" olddefconfig"
+
     // 2. Build the whole tower in one gated host action: host build-tools into
     //    $P, then the DERIVED toolchain into $TC, then the kernel with CC=/gcc.
     //    `$B` is the ABSOLUTE scratch base captured BEFORE any `cd`.
@@ -126,38 +139,39 @@ main()<Int> -> {
         " && export PATH=\"$TC/bin:$PATH\" LD_LIBRARY_PATH=\"$TC/lib:$P/lib\"" +
         " && mkdir -p \"$B/gccb\" && curl -sSL -o \"$B/gcc.tar.xz\" \"https://ftp.osuosl.org/pub/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz\"" +
         " && tar xJf \"$B/gcc.tar.xz\" -C \"$B\" && cd \"$B/gccb\" && ../gcc-13.2.0/configure --prefix=\"$TC\" --enable-languages=c --disable-bootstrap --disable-multilib --with-gmp=\"$TC\" --with-mpfr=\"$TC\" --with-mpc=\"$TC\" --disable-nls --disable-werror --disable-shared --disable-libcc1 --disable-libquadmath --disable-libgomp --disable-libatomic --disable-libsanitizer --disable-libvtv --disable-libssp && make -j20 MAKEINFO=true && make install MAKEINFO=true" +
-        // --- compile the DERIVED kernel with the DERIVED gcc, out-of-tree
+        // --- compile the DERIVED kernel with the DERIVED gcc, out-of-tree,
+        //     BYTE-DETERMINISTICALLY: fixed timestamp/user/host + SOURCE_DATE_EPOCH
+        //     + gcc -frandom-seed/-fno-guess-branch-probability, then PROVE it with
+        //     a clean second build (same path) -> identical bzImage bytes.
         " && export CC=\"$TC/bin/gcc\" HOSTCC=\"$TC/bin/gcc\"" +
-        " && cd \"$B/linux-" + ver + "\" && make O=\"$B/kbuild\" defconfig" +
-        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
-        " -d DEBUG_INFO -d DEBUG_INFO_BTF -d GDB_SCRIPTS -d STACK_VALIDATION" +
-        " -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
-        " -d OBJTOOL -d MODULE_SIG -d SYSTEM_TRUSTED_KEYS -d SYSTEM_REVOCATION_KEYS" +
-        " && make O=\"$B/kbuild\" olddefconfig" +
-        // objtool builds iff CONFIG_OBJTOOL=y (arch-selected, sticky) — with
-        // libelf provided it builds fine; keep the second pass for ORC->FP.
-        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
-        " -d OBJTOOL -d STACK_VALIDATION -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
-        " && make O=\"$B/kbuild\" olddefconfig" +
-        " && make O=\"$B/kbuild\" -j20 bzImage"
+        " && export KBUILD_BUILD_TIMESTAMP=\"Tue Aug 25 2026 00:00:00 +0000\" KBUILD_BUILD_USER=\"vybos\" KBUILD_BUILD_HOST=\"deterministic-rb000\" SOURCE_DATE_EPOCH=1785000000 KCFLAGS=\"-frandom-seed=vybos-rb000 -fno-guess-branch-probability\"" +
+        " && " + kcfgOp + " && make O=\"$B/kbuild\" -j20 bzImage && cp \"$B/kbuild/arch/x86/boot/bzImage\" \"$B/kbz1\"" +
+        " && rm -rf \"$B/kbuild\" && mkdir -p \"$B/kbuild\" && " + kcfgOp + " && make O=\"$B/kbuild\" -j20 bzImage && cp \"$B/kbuild/arch/x86/boot/bzImage\" \"$B/kbz2\""
+
     prep<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"" +
         " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\" && " + btools
-    fails = fails + check(run(prep) == 0, "derived toolchain built; kernel compiled with derived gcc (bzImage)")
+    fails = fails + check(run(prep) == 0, "derived toolchain built; kernel compiled by derived gcc, built twice (bzImage)")
 
-    // 3. content-address the BUILT bzImage.
-    bz<String> = read_flat(kbuild + "/arch/x86/boot/bzImage")
+    // 3. byte-determinism PROOF + content-address the bzImage into the NESTED store.
+    kbz1<String> = read_flat(buildRoot + "/kbz1")
+    kbz2<String> = read_flat(buildRoot + "/kbz2")
+    ch1<String> = content_hash(kbz1, name, ver)
+    ch2<String> = content_hash(kbz2, name, ver)
+    fails = fails + check(ch1.len() == 64 && ch1 == ch2, "BYTE-DETERMINISTIC: identical bzImage across two clean builds (sha " + ch1 + ")")
+    bz<String> = kbz2
     fails = fails + check(bz.len() > 5000000, "built bzImage non-trivial (" + bz.len().to_string() + " bytes)")
     fails = fails + check(has_hdrs(bz), "bzImage carries the Linux boot-protocol 'HdrS' signature (0x202)")
-    outCA<String> = content_hash(bz, name, ver)
-    oBin<String> = storeDir + "/" + outCA + "-" + name + "-" + ver + "-bzImage.bin"
-    fails = fails + check(write_flat(oBin, bz), "built bzImage content-addressed into store (.bin, ca " + outCA + ")")
+    outCA<String> = ch2
+    match (mkdir(storeDir + "/" + outCA)) { b -> {} ? -> {} }
+    oBin<String> = storeDir + "/" + outCA + "/" + name + "-" + ver + "-bzImage.bin"
+    fails = fails + check(write_flat(oBin, bz), "built bzImage content-addressed into NESTED store (store/" + outCA + ")")
 
-    // 4. metadata.
+    // 4. metadata (records determinism + byte-identical rebuild hash).
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
-        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA +
-        ", \"buildRecipe\": \"build derived toolchain (gmp/mpfr/mpc/binutils/gcc 13.2.0 C-only) in-scratch; make O=<kbuild> defconfig + dep-trims + bzImage with CC=<derived-gcc>\", \"outputContentHash\": " + outCA +
-        ", \"toolchain\": \"DERIVED gcc 13.2.0 (C-only) + derived binutils 2.43; host cc only bootstraps the toolchain\", \"format\": \"Linux x86 bzImage (boot-protocol HdrS@0x202)\"" +
-        ", \"storePath\": \"/vyb/store/" + outCA + "-" + name + "-" + ver + "-bzImage.bin\"}"
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": \"" + srcCA +
+        "\", \"buildRecipe\": \"build derived toolchain (gmp/mpfr/mpc/binutils/gcc 13.2.0 C-only) in-scratch; KBUILD_BUILD_TIMESTAMP/USER/HOST fixed + SOURCE_DATE_EPOCH + gcc -frandom-seed/-fno-guess-branch-probability; make O=<kbuild> defconfig + dep-trims + bzImage with CC=<derived-gcc>, built TWICE clean -> identical\", \"outputContentHash\": \"" + outCA +
+        "\", \"deterministic\": true, \"rebuildIdentical\": true, \"format\": \"Linux x86 bzImage (HdrS@0x202)\"" +
+        ", \"storePath\": \"/vyb/store/" + outCA + "/" + name + "-" + ver + "-bzImage.bin\"}"
     mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
 
