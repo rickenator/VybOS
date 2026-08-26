@@ -1,0 +1,160 @@
+// build-derive-kernel.vyb — VybOS TOOLCHAIN T3: the Linux kernel as a
+// build-stage derivation. The FLAGSHIP: a content-addressed bzImage derived
+// from source, replacing the fetched Alpine netboot vmlinuz stop-gap, and
+// giving issue #4's build.plan a real linux-<ver>-vyb package.
+//
+// Pipeline (all vybey + a gated host build action):
+//   fetch linux-6.6 source over verified TLS (.tar.xz, 140MB)
+//   realize the SOURCE content-addressed into the flat store
+//   build OUT-OF-TREE (O=<kbuild>) so the source tree stays clean:
+//     cd linux-<ver> && make O=<kbuild> defconfig
+//     scripts/config --file <kbuild>/.config -d <missing-host-dep symbols>
+//     make O=<kbuild> olddefconfig      (resolve config deps)
+//     make O=<kbuild> -j<N> bzImage
+//   content-address the BUILT arch/x86/boot/bzImage (.bin) + .meta.json
+//
+// Host-dep trims (godzilla lacks them; defconfig enables them by default):
+//   - no pahole/dwarves -> -d DEBUG_INFO -d DEBUG_INFO_BTF (+GDB_SCRIPTS)
+//     (BTF/debug needs pahole; dropping it also massively speeds the build)
+//   - no libelf/libdw headers -> -d STACK_VALIDATION -d UNWINDER_ORC
+//     -e UNWINDER_FRAME_POINTER (objtool, the ORC/STACK_VALIDATION machinery,
+//     links libelf; frame-pointer unwinder needs no objtool)
+//
+// bzImage authenticity: not a plain ELF — check the Linux boot protocol
+// signature "HdrS" at offset 0x202 in the setup header.
+// NOTE: built with the HOST gcc for now; swapping in the derived gcc
+// (build-derive-gcc.vyb output as CC) is a one-line override — T2 proved the
+// derived compiler compiles real C. Flat store, binary-safe IO.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import http::{HttpResponse}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+// The Linux boot protocol puts the magic "HdrS" (setup header signature) at
+// byte offset 0x202 of arch/x86/boot/bzImage. A real bzImage has it.
+has_hdrs(b<String>)<Bool> -> {
+    o<Int> = 514   // 0x202 — offset of the 'HdrS' setup-header signature
+    if (b.len() < o + 4) { return false }
+    return b.char_at(o) == 72 && b.char_at(o+1) == 100 &&
+           b.char_at(o+2) == 114 && b.char_at(o+3) == 83
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    buildRoot<String> = "build/derive-kernel-out"
+    name<String> = "linux"
+    ver<String> = "6.6"
+    srcUrl<String> = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-" + ver + ".tar.xz"
+
+    println("=== VybOS TOOLCHAIN T3: Linux kernel bzImage as a build-stage derivation ===\n")
+    fails<Int> = 0
+
+    // 1. fetch + realize the kernel source (140MB — verified the client survives it).
+    u<UrlSplit> = url_split(srcUrl)
+    r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+    fails = fails + check(r.status == 200, "fetched kernel source over verified TLS (" + r.status.to_string() + ")")
+    if (r.status != 200) { println("  abort: fetch failed"); return 1 }
+    srcCA<Int> = content_hash(r.body, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    fails = fails + check(r.body.len() > 100000000, "kernel source tarball non-trivial (" + r.body.len().to_string() + " bytes)")
+    fails = fails + check(write_flat(sSrc, r.body), "kernel source content-addressed into store (.src)")
+    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+
+    // 2. build bison + flex in-scratch (kconfig needs them; the 6.6 tarball
+    //    does NOT ship generated lexer.lex.c/parser.tab.c), then the kernel
+    //    OUT-OF-TREE (O=<kbuild>) with the missing-host-dep trims.
+    kbuild<String> = buildRoot + "/kbuild"
+    // bison+flex built into a scratch prefix so `make defconfig` can generate
+    // kconfig's lexer/parser. bison via verified-TLS-friendly osuosl; flex uses
+    // its RELEASE tarball (git archives omit configure + scan.c), fetched by
+    // host curl since the GitHub release-asset redirect is cross-host.
+    // `$B` is the ABSOLUTE scratch base captured BEFORE any `cd`, so paths stay
+    // correct after the recipe cd's into bison/flex/linux build dirs.
+    btools<String> = "B=\"$PWD/" + buildRoot + "\" && P=\"$B/bt-pfx\" && mkdir -p \"$P\"" +
+        " && curl -sSL -o \"$B/bison.tar.xz\" \"https://ftp.osuosl.org/pub/gnu/bison/bison-3.8.2.tar.xz\"" +
+        " && tar xJf \"$B/bison.tar.xz\" -C \"$B\"" +
+        " && cd \"$B/bison-3.8.2\" && ./configure --prefix=\"$P\" --disable-nls && make -j20 && make install" +
+        " && curl -sSL -L -o \"$B/flex.tar.gz\" \"https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz\"" +
+        " && tar xzf \"$B/flex.tar.gz\" -C \"$B\"" +
+        " && cd \"$B/flex-2.6.4\" && ./configure --prefix=\"$P\" && make -j20 && make install" +
+        // objtool is unconditional on x86_64 and links -lelf -> build elfutils
+        // (provides libelf.h/gelf.h + libelf.so) into $P and point pkg-config /
+        // LD_LIBRARY_PATH at it so objtool compiles AND runs.
+        " && curl -sSL -o \"$B/elfutils.tar.bz2\" \"https://sourceware.org/elfutils/ftp/0.191/elfutils-0.191.tar.bz2\"" +
+        " && tar xjf \"$B/elfutils.tar.bz2\" -C \"$B\"" +
+        " && cd \"$B/elfutils-0.191\" && ./configure --prefix=\"$P\" --disable-debuginfod --disable-libdebuginfod --disable-nls --disable-doc" +
+        " && make -j20 && make install" +
+        " && export PATH=\"$P/bin:$PATH\" PKG_CONFIG_PATH=\"$P/lib/pkgconfig\" LD_LIBRARY_PATH=\"$P/lib\" " +
+        " && cd \"$B/linux-" + ver + "\" && make O=\"$B/kbuild\" defconfig" +
+        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
+        " -d DEBUG_INFO -d DEBUG_INFO_BTF -d GDB_SCRIPTS -d STACK_VALIDATION" +
+        " -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
+        " -d OBJTOOL -d MODULE_SIG -d SYSTEM_TRUSTED_KEYS -d SYSTEM_REVOCATION_KEYS" +
+        " && make O=\"$B/kbuild\" olddefconfig" +
+        // objtool builds iff CONFIG_OBJTOOL=y, which ORC/STACK_VALIDATION select
+        // and x86_64's defaults are sticky — force it off a SECOND time so the
+        // frame-pointer unwinder is definitively picked (no libelf needed).
+        " && \"$B/linux-" + ver + "/scripts/config\" --file \"$B/kbuild/.config\"" +
+        " -d OBJTOOL -d STACK_VALIDATION -d UNWINDER_ORC -e UNWINDER_FRAME_POINTER" +
+        " && make O=\"$B/kbuild\" olddefconfig" +
+        " && make O=\"$B/kbuild\" -j20 bzImage"
+    prep<String> = "rm -rf \"" + buildRoot + "\" && mkdir -p \"" + buildRoot + "\"" +
+        " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\" && " + btools
+    fails = fails + check(run(prep) == 0, "bison+flex built; kernel configured (defconfig, dep-trimmed) + built (bzImage)")
+
+    // 3. content-address the BUILT bzImage.
+    bz<String> = read_flat(kbuild + "/arch/x86/boot/bzImage")
+    fails = fails + check(bz.len() > 5000000, "built bzImage non-trivial (" + bz.len().to_string() + " bytes)")
+    fails = fails + check(has_hdrs(bz), "bzImage carries the Linux boot-protocol 'HdrS' signature (0x202)")
+    outCA<Int> = content_hash(bz, name, ver)
+    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + "-bzImage.bin"
+    fails = fails + check(write_flat(oBin, bz), "built bzImage content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+
+    // 4. metadata.
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
+        ", \"buildRecipe\": \"make O=<kbuild> defconfig + scripts/config dep-trims + make olddefconfig && make bzImage\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"toolchain\": \"host gcc (derived gcc T2 swap = one-line CC override)\", \"format\": \"Linux x86 bzImage (boot-protocol HdrS@0x202)\"" +
+        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-bzImage.bin\"}"
+    mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
+    println("  output bz  : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  meta        : " + mPath)
+    println("")
+    sum<String> = "ALL KERNEL TOOLCHAIN-DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

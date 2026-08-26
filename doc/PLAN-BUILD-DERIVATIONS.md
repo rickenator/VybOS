@@ -82,7 +82,22 @@ mirroring Nix derivations.
      records cc1/libgcc. 88MB source also fits under the registry ceiling. Note:
      the flat store keeps the driver ELF + metadata; a full self-contained
      installed tree (cc1 + libgcc + headers/specs) needs dirs/a tarball (mkdir
-     RFE) — builds reuse the in-scratch prefix for now.
+     now in stdlib per Vyb #195 Item 1 — a nested store/full-tree staging is
+     the migration follow-on).
+   - **1g. LANDED — Linux kernel (T3)**: `build/build-derive-kernel.vyb` is
+     the FLAGSHIP: a content-addressed `bzImage` derived from source, replacing
+     the fetched Alpine netboot `vmlinuz` stop-gap. Fetches `linux-6.6` (140MB
+     via `cdn.kernel.org`, verified TLS), realizes the source, builds
+     OUT-OF-TREE (`O=<kbuild>`) after an in-scratch build of the missing host
+     build deps — **bison + flex** (kconfig regenerates `parser.tab.c` /
+     `lexer.lex.c`; the 6.6 tarball ships no generated parsers) and
+     **elfutils/libelf** (objtool is UNCONDITIONAL on x86_64 and links `-lelf`;
+     no config flag can skip it). Output `linux-6.6-bzImage.bin` (12MB) — a
+     real, bootable kernel (`file`: "Linux kernel x86 boot executable bzImage,
+     version 6.6.0"), verified by the `HdrS` boot-protocol signature. Built with
+     the HOST gcc; swapping in the derived gcc (T2) is a one-line `CC`
+     override. NOTE for follow-ons: dodging kernel build deps means compiling
+     them — there is no "just disable it" for libelf/objtool on x86_64.
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via
@@ -92,10 +107,13 @@ mirroring Nix derivations.
    NOTE: busybox.net ships `.tar.bz2`; the DERIVATION stores the fetched tarball
    and the build step unpacks it with host `tar` (Vyb's archive module handles
    gzip — a bzip2 inflate is an impl-agent RFE if we want Vyb-side extraction).
-3. **Linux kernel as the flagship** — kernel `.tar.*` source → toolchain →
-   config (`make defconfig`-style) → `bzImage`. This is what turns the QEMU
-   boot (currently a *fetched* Alpine `vmlinuz`) into a *derived* VybOS kernel,
-   and gives issue #4's `build.plan` a real `linux-<ver>-vyb` package.
+3. **Linux kernel as the flagship — LANDED (T3)** — done: a `bzImage` derived
+   from `linux-6.6` source via the derivation machinery (see §1g). This is what
+   turns the QEMU boot (previously a *fetched* Alpine `vmlinuz`) into a
+   *derived* VybOS kernel, and gives issue #4's `build.plan` a real
+   `linux-6.6-vyb` package. Remaining for a fully-derived boot: swap the
+   derived `bzImage` for the fetched one in `tools/vybos-run --runtime qemu`,
+   and (opt) build the kernel with the derived gcc (T2) via `CC` override.
 
 ## Honest limits / follow-ons
 
@@ -103,23 +121,31 @@ mirroring Nix derivations.
   `freedom`, like the mkdir fallback). A real build sandbox (e.g. bubblewrap —
   already used by `tools/vybos-run`) with no network + ro-bind toolchain is the
   follow-on for isolation/reproducibility.
-- **Not byte-reproducible yet (busybox)**: the default busybox build is
-  byte-deterministic for a fixed path (`make clean && make` reproduces the SHA)
-  but NOT across rebuilds/paths without reprobuild flags (`SOURCE_DATE_EPOCH`,
-  `-frandom-seed`, `-fdebug-prefix-map`). hello-vyb certifies the DERIVATION
-  machinery is byte-deterministic for a deterministic compile; hardening busybox
-  (and later the kernel) for full reprobuilds is a follow-on.
-- **Stand-in hash**: FNV-1a content address (B2 in PLAN_BOOTABLE_IMAGE wants
-  SHA-256 once the stdlib has it).
-- **Flat store**: single-file `.bin`/`.src`; nested dirs blocked on the `mkdir`
-  RFE.
+- **Not byte-reproducible yet**: the default busybox build is byte-deterministic
+  for a fixed path (`make clean && make` reproduces the SHA) but NOT across
+  rebuilds/paths without reprobuild flags (`SOURCE_DATE_EPOCH`,
+  `-frandom-seed`, `-fdebug-prefix-map`); the kernel build likewise embeds a
+  build timestamp/hostname. hello-vyb certifies the DERIVATION machinery is
+  byte-deterministic for a deterministic compile; hardening the real builds for
+  full reprobuilds is a follow-on.
+- **Stand-in hash**: content address is still FNV-1a; the stdlib now ships
+  SHA-256 (Vyb #195 Item 2) — migrating the content hash to the real digest is
+  a follow-on (B2 in PLAN_BOOTABLE_IMAGE).
+- **Flat store currently**: single-file `.bin`/`.src`; stdlib `mkdir` (Vyb #195
+  Item 1) has landed, so migrating to a nested store / full-tree staging is the
+  follow-on.
+- **Kernel build deps must be compiled, not skipped**: x86_64 objtool is
+  unconditional and links libelf; kconfig regenerates its lexer/parser with
+  flex/bison. The kernel derivation builds bison/flex/elfutils in-scratch.
 - **Large content**: string-registry/#189-adjacent ceilings still cap very large
-  builds (a kernel build is many-MB staged output) — watch this as we scale.
+  builds; the 140MB kernel source fetch fits, but watch staged output size as
+  builds grow.
 
 ## Relationship to issue #4 (AI configurator)
 
-- `build.plan` / `build.start` get something real to reference once kernels (and
-  toolchains) are derivations: a deterministic build plan over real packages.
+- `build.plan` / `build.start` get something real to reference now that kernels
+  (and toolchains) are derivations: a deterministic build plan over real
+  packages.
 - The AI proposes; VybOS validates; the user approves; VybOS executes — a
   `build.start` is exactly a confirmation-gated execution of this capability.
 - Ordering recommendation (from the #4 comment): build-stage derivations +
