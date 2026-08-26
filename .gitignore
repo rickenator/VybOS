@@ -25,3 +25,4 @@ build/derive-mpc-out*/
 build/derive-binutils-out*/
 build/derive-gcc-out*/
 build/derive-kernel-out*/
+build/derive-qemu-out*/

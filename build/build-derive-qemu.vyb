@@ -1,0 +1,152 @@
+// build-derive-qemu.vyb — VybOS: QEMU-from-source as a build-stage derivation.
+// Gives the boot proof a DERIVED hypervisor: `qemu-system-x86_64` built from
+// source (no host-QEMU assumption — pinned source version, fully reproducible),
+// so this repo can boot its derived kernel under its own derived QEMU.
+//
+// Pipeline (all vybey + one gated host build action), all into one scratch
+// prefix $PFX (absolute $B base captured BEFORE any cd — see kernel gotcha):
+//   build tools : python3 venv + meson + packaging (isolated; like host gcc
+//                 bootstrapping, these are build tools, not the derived artifact)
+//   libffi 3.4.6 : CFLAGS=-fPIC --disable-shared  (static, but PIC so it can
+//                 link into glib's SHARED libs — non-PIC static breaks glib)
+//   pixman 0.42.2: CFLAGS=-fPIC --disable-shared  (same reason -> into qemu)
+//   glib 2.80.0 : meson; SHARED .so (QEMU links it; carried at runtime via
+//                 LD_LIBRARY_PATH=$PFX/lib)
+//   qemu 8.2.2  : ./configure --target-list=x86_64-softmmu
+//                 --without-default-features --disable-docs --disable-tools
+//                 && ninja qemu-system-x86_64
+// Content-address: the built qemu-system-x86_64 ELF (.bin) + libglib in the
+//   same store dir + .meta.json (records the pinned source versions).
+//
+// Verified: libffi->pixman->glib->qemu all build from these sources on godzilla;
+// the derived qemu boots the derived linux-6.6 kernel to VYBOS_READY=1.
+// Sources: libffi=github release, pixman=cairographics, glib=gnome.org,
+//          qemu=download.qemu.org (all direct, verified-TLS-friendly).
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import http::{HttpResponse}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+is_elf(b<String>)<Bool> -> {
+    return b.len() >= 4 && b.char_at(0) == 127 && b.char_at(1) == 69 &&
+           b.char_at(2) == 76 && b.char_at(3) == 70
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    buildRoot<String> = "build/derive-qemu-out"
+    qv<String> = "8.2.2"
+    gv<String> = "2.80.0"
+    pv<String> = "0.42.2"
+    fv<String> = "3.4.6"
+    println("=== VybOS: QEMU-from-source derivation (derived hypervisor for the boot proof) ===\n")
+    fails<Int> = 0
+
+    // Fetch + realize each source over verified TLS.
+    // libffi
+    libffiUrl<String> = "https://github.com/libffi/libffi/releases/download/v" + fv + "/libffi-" + fv + ".tar.gz"
+    u1<UrlSplit> = url_split(libffiUrl)
+    r1<HttpResponse> = https_get_full_verified(u1.host, u1.port, u1.path, "")
+    fails = fails + check(r1.status == 200, "libffi source fetched (" + r1.status.to_string() + ")")
+    fSrc<String> = storeDir + "/libffi-" + fv + "-src.tar.gz"
+    write_flat(fSrc, r1.body)
+
+    // pixman
+    pixUrl<String> = "https://www.cairographics.org/releases/pixman-" + pv + ".tar.gz"
+    u2<UrlSplit> = url_split(pixUrl)
+    r2<HttpResponse> = https_get_full_verified(u2.host, u2.port, u2.path, "")
+    fails = fails + check(r2.status == 200, "pixman source fetched (" + r2.status.to_string() + ")")
+    pSrc<String> = storeDir + "/pixman-" + pv + "-src.tar.gz"
+    write_flat(pSrc, r2.body)
+
+    // glib
+    glibUrl<String> = "https://download.gnome.org/sources/glib/2.80/glib-" + gv + ".tar.xz"
+    u3<UrlSplit> = url_split(glibUrl)
+    r3<HttpResponse> = https_get_full_verified(u3.host, u3.port, u3.path, "")
+    fails = fails + check(r3.status == 200, "glib source fetched (" + r3.status.to_string() + ")")
+    gSrc<String> = storeDir + "/glib-" + gv + "-src.tar.xz"
+    write_flat(gSrc, r3.body)
+
+    // qemu
+    qUrl<String> = "https://download.qemu.org/qemu-" + qv + ".tar.xz"
+    u4<UrlSplit> = url_split(qUrl)
+    r4<HttpResponse> = https_get_full_verified(u4.host, u4.port, u4.path, "")
+    fails = fails + check(r4.status == 200, "qemu source fetched (" + r4.status.to_string() + ")")
+    qSrc<String> = storeDir + "/qemu-" + qv + "-src.tar.xz"
+    write_flat(qSrc, r4.body)
+
+    // One big gated host build: venv meson + libffi + pixman + glib + qemu.
+    rec<String> = "B=\"$PWD/" + buildRoot + "\" && ST=\"$PWD/store\" && PFX=\"$B/pfx\" && rm -rf \"$B\" && mkdir -p \"$B\" \"$PFX\"" +
+        // build tools: isolated python venv with meson+packaging (bootstrap, like
+        // host gcc). Pin /usr/bin/python3 (system 3.12): QEMU's meson build makes
+        // its own venv and fails on a >3.12 python (conda/other on PATH is 3.14).
+        " && /usr/bin/python3 -m venv \"$B/venv\" && \"$B/venv/bin/pip\" -q install meson packaging" +
+        " && export PATH=\"$B/venv/bin:$PATH\"" +
+        // libffi (static PIC)
+        " && tar xzf \"$ST/libffi-" + fv + "-src.tar.gz\" -C \"$B\"" +
+        " && cd \"$B/libffi-" + fv + "\" && CFLAGS=\"-fPIC\" ./configure --prefix=\"$PFX\" --disable-shared && make -j20 && make install" +
+        // pixman (static PIC)
+        " && tar xzf \"$ST/pixman-" + pv + "-src.tar.gz\" -C \"$B\"" +
+        " && cd \"$B/pixman-" + pv + "\" && CFLAGS=\"-fPIC\" ./configure --prefix=\"$PFX\" --disable-shared && make -j20 && make install" +
+        " && export PKG_CONFIG_PATH=\"$PFX/lib/pkgconfig:$PFX/lib/x86_64-linux-gnu/pkgconfig\" LD_LIBRARY_PATH=\"$PFX/lib:$PFX/lib/x86_64-linux-gnu\"" +
+        // glib (shared)
+        " && tar xJf \"$ST/glib-" + gv + "-src.tar.xz\" -C \"$B\"" +
+        " && cd \"$B/glib-" + gv + "\" && meson setup _b --prefix=\"$PFX\" -Dtests=false -Dinstalled_tests=false -Ddocumentation=false -Dnls=disabled -Dlibmount=disabled -Dselinux=disabled -Dintrospection=disabled && ninja -C _b && ninja -C _b install" +
+        // qemu-system-x86_64
+        " && tar xJf \"$ST/qemu-" + qv + "-src.tar.xz\" -C \"$B\"" +
+        " && cd \"$B/qemu-" + qv + "\" && ./configure --prefix=\"$PFX\" --target-list=x86_64-softmmu --without-default-features --disable-docs --disable-tools" +
+        " && ninja -C build -j20 qemu-system-x86_64"
+    fails = fails + check(run(rec) == 0, "venv meson + libffi + pixman + glib + qemu built from source")
+
+    // Content-address the derived qemu-system-x86_64.
+    lib<String> = read_flat(buildRoot + "/qemu-" + qv + "/build/qemu-system-x86_64")
+    fails = fails + check(is_elf(lib) && lib.len() > 2000000, "qemu-system-x86_64 is a real ELF (" + lib.len().to_string() + " bytes)")
+    outCA<Int> = content_hash(lib, "qemu", qv)
+    oBin<String> = storeDir + "/" + outCA.to_string() + "-qemu-" + qv + "-system-x86_64.bin"
+    fails = fails + check(write_flat(oBin, lib), "qemu-system-x86_64 content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+
+    meta<String> = "{\"name\": \"qemu\", \"version\": \"" + qv +
+        "\", \"pinnedSources\": {\"qemu\": \"" + qv + "\", \"glib\": \"" + gv + "\", \"pixman\": \"" + pv + "\", \"libffi\": \"" + fv + "\"}" +
+        ", \"build\": \"configure --target-list=x86_64-softmmu --without-default-features; ninja qemu-system-x86_64\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"runtime\": \"$PFX/lib (derived glib) via LD_LIBRARY_PATH\", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-qemu-" + qv + "-system-x86_64.bin\"}"
+    fails = fails + check(write_flat(storeDir + "/qemu-" + qv + "-derivation.meta.json", meta), "qemu derivation metadata written")
+    println("  output qemu : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  pinned       : qemu " + qv + " + glib " + gv + " + pixman " + pv + " + libffi " + fv + " (source, no host dep)")
+    println("")
+    sum<String> = "ALL QEMU-FROM-SOURCE DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

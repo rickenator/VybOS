@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (full toolchain derived; kernel boots via derived gcc; content hash on stdlib SHA-256)
+> last_updated: 2026-08-25 (full derived boot: toolchain → kernel → QEMU hypervisor all from source; content hash on SHA-256)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -147,6 +147,17 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     version string shows `gcc (GCC) 13.2.0, GNU ld 2.43` (the derived
     compiler). The fetched QEMU vmlinuz is now replaceable by a derived kernel —
     giving build.plan a real `linux-6.6-vyb`.
+18. **DERIVED HYPERVISOR (QEMU-from-source)** — `build/build-derive-qemu.vyb`:
+    builds `qemu-system-x86_64` 8.2.2 from source (isolated venv meson +
+    libffi + pixman + glib, pinned source versions) so the boot proof never
+    ASSUMES host qemu. Content-addressed the derived qemu ELF. Proven: the
+    store-derived qemu (with its pc-bios + glib) boots the derived kernel to
+    `VYBOS_READY=1` via `tools/vybos-run --runtime qemu --qemu <derived>
+    --qemu-libdir <pfx/lib> --qemu-data <pc-bios>/` — the whole chain
+    (toolchain → kernel → hypervisor) is now derived. Gotchas: QEMU's meson
+    build makes its own venv and fails on python >3.12 (pin /usr/bin/python3);
+    a bare derived qemu needs its firmware via QEMU `-L` (--qemu-data) and its
+    glib via LD_LIBRARY_PATH (--qemu-libdir).
 
 ## 3. GitHub issues filed against Vyb (this session)
 

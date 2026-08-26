@@ -37,6 +37,11 @@ VYB="${VYB:-$HOME/Projects/Vyb-vybos/build/vyb}"
 VYB_STDLIB="${VYB_STDLIB:-$HOME/Projects/Vyb-vybos/stdlib}"
 BUSYBOX="${BUSYBOX:-/usr/bin/busybox}"
 KERNEL="${VYBOS_KERNEL:-}"
+# A DERIVED QEMU (build-derive-qemu.vyb) can be supplied explicitly so the boot
+# proof never ASSUMES host qemu; falls back to qemu-system-x86_64 on PATH.
+QEMU_BIN="${VYBOS_QEMU:-qemu-system-x86_64}"
+QEMU_LIBDIR="${VYBOS_QEMU_LIBDIR:-}"
+QEMU_DATA="${VYBOS_QEMU_DATA:-}"   # QEMU -L data dir (firmware/pc-bios); needed for a bare derived qemu
 KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/vmlinuz-virt"
 MODE=run
 RUNTIME="${VYBOS_RUNTIME:-bwrap}"
@@ -49,6 +54,9 @@ while [ $# -gt 0 ]; do
     --rootfs) ROOTFS="$2"; shift ;;
     --runtime) RUNTIME="$2"; shift ;;
     --kernel) KERNEL="$2"; shift ;;
+    --qemu) QEMU_BIN="$2"; shift ;;
+    --qemu-libdir) QEMU_LIBDIR="$2"; shift ;;
+    --qemu-data) QEMU_DATA="$2"; shift ;;
     --busybox) BUSYBOX="$2"; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -116,8 +124,12 @@ case "$RUNTIME" in
     INITRD=$(mktemp /tmp/vybos-initrd.XXXXXX)
     ( cd "$IR" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -1 ) > "$INITRD"
     SERIAL=$(mktemp /tmp/vybos-serial.XXXXXX)
-    qemu-system-x86_64 -m 256M -accel tcg -kernel "$KERNEL" -initrd "$INITRD" \
-        -append "console=ttyS0 rdinit=/init" -nographic -no-reboot > "$SERIAL" 2>&1 &
+    # use a DERIVED qemu if given; its glib lives in --qemu-libdir (LD_LIBRARY_PATH)
+    # and its firmware in --qemu-data (QEMU -L).
+    if [ -n "$QEMU_LIBDIR" ]; then export LD_LIBRARY_PATH="${QEMU_LIBDIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
+    QDATA=(); [ -n "$QEMU_DATA" ] && QDATA=(-L "$QEMU_DATA")
+    "$QEMU_BIN" -m 256M -accel tcg -kernel "$KERNEL" -initrd "$INITRD" \
+        -append "console=ttyS0 rdinit=/init" "${QDATA[@]}" -nographic -no-reboot > "$SERIAL" 2>&1 &
     QPID=$!
     # wait up to ~180s for the READY marker on serial (TCG is slow; no /dev/kvm).
     i=0; ready=0
