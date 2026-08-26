@@ -43,7 +43,7 @@ fetch_to(base<String>, url<String>, outname<String>)<Bool> -> {
 }
 
 build_once(base<String>, tag<String>)<Bool> -> {
-    rec<String> = "B=$PWD/" + base + " && G=$B/" + tag + " && P=$B/pfx && rm -rf $G $P && mkdir -p $P" +
+    rec<String> = "B=$PWD/" + base + " && G=$B/" + tag + " && P=$B/pfx && rm -rf $G $P && mkdir -p $P $G" +
         " && export SOURCE_DATE_EPOCH=1785000000 CFLAGS=-ffile-prefix-map=$B=/p" +
         // deps into $P (pinned install): gmp -> mpfr -> mpc -> binutils
         " && cd $G && tar xJf $B/gmp-6.3.0.tar.xz && cd gmp-6.3.0" +
