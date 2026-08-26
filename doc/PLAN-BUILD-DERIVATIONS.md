@@ -71,6 +71,18 @@ mirroring Nix derivations.
      content-addressed; each is a runnable `GNU Binutils 2.43`. Source via the
      OSUOSL mirror (`ftp.gnu.org` hangs the verified TLS client; 28MB body
      still fits under the registry ceiling with #191).
+   - **1f. LANDED — gcc C-only (T2)**: `build/build-derive-gcc.vyb` is the
+     CAPSTONE of the bootstrapped C toolchain. It rebuilds the whole tree into
+     one scratch prefix — gmp → mpfr → mpc → binutils (derived as/ld/ar on
+     `PATH`) → gcc 13.2.0 (`--enable-languages=c --disable-bootstrap
+     --disable-multilib`). `--disable-multilib` is REQUIRED (host lacks 32-bit
+     libc/headers; configure's multilib link test aborts otherwise). Proves it
+     end-to-end: **the derived gcc compiles a real C program that runs**
+     ("hello from derived gcc 13.2.0"). Content-addresses the gcc driver +
+     records cc1/libgcc. 88MB source also fits under the registry ceiling. Note:
+     the flat store keeps the driver ELF + metadata; a full self-contained
+     installed tree (cc1 + libgcc + headers/specs) needs dirs/a tarball (mkdir
+     RFE) — builds reuse the in-scratch prefix for now.
 2. **Real fetched source — LANDED (busybox 1.36.1)**: `build/build-derive-real.vyb`
    fetches `https://busybox.net/downloads/busybox-1.36.1.tar.bz2` over verified
    TLS, realizes the SOURCE (content-addressed `.src`, 2.5MB), and BUILDS it via

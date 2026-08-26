@@ -23,3 +23,4 @@ build/derive-gmp-out*/
 build/derive-mpfr-out*/
 build/derive-mpc-out*/
 build/derive-binutils-out*/
+build/derive-gcc-out*/

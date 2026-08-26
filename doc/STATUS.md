@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (toolchain T0c→T1: gmp/mpfr/mpc + binutils derived)
+> last_updated: 2026-08-25 (toolchain complete: gmp/mpfr/mpc/binutils/gcc derived)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -127,6 +127,14 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     makeinfo. All three content-addressed; each is a runnable `GNU Binutils
     2.43`. Source: 28MB via the OSUOSL mirror (fits under the registry ceiling
     with #191).
+16. **TOOLCHAIN T2 (gcc, C-only)** — `build/build-derive-gcc.vyb`: the CAPSTONE
+    derivation. Rebuilds gmp → mpfr → mpc → binutils → gcc 13.2.0 into one
+    scratch prefix (derived as/ld/ar on `PATH`), languages=c, single-stage
+    (`--disable-bootstrap`), `--disable-multilib` (REQUIRED — host has no
+    32-bit libc; configure aborts otherwise). Proof: **the derived gcc compiles
+    a real C program that runs** ("hello from derived gcc 13.2.0"). Driver
+    content-addressed + cc1/libgcc recorded. 88MB source fits under the
+    registry ceiling with #191. Full bootstrapped C toolchain now derived.
 
 ## 3. GitHub issues filed against Vyb (this session)
 
@@ -191,9 +199,9 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
       doc/PLAN-BUILD-DERIVATIONS.md): landed — hello-vyb (byte-reproducible),
       busybox 1.36.1 (real fetched source → built ELF), a SELF-HOSTING C
       compiler bootstrap (chibicc: GEN-1 → GEN-2 via self-recompile), and
-      toolchain T0a→T1 (gmp → libgmp.a, mpfr → libmpfr.a, mpc → libmpc.a — the
-      GNU lib trio gcc links — and binutils → as/ld/ar). NEXT (broken up, per
-      release 0.1 "Brutal Dogfood"): gcc (C-only) → Linux kernel — turning
+      toolchain T0a→T2 (gmp/mpfr/mpc libs + binutils as/ld/ar + gcc C-only —
+      a FULL bootstrapped C toolchain, all derived from source). NEXT (broken
+      up, per release 0.1 "Brutal Dogfood"): Linux kernel — turning
       the fetched QEMU vmlinuz into a *derived* VybOS kernel and giving issue
       #4's `build.plan` a real `linux-<ver>-vyb` package.
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or

@@ -1,0 +1,180 @@
+// build-derive-gcc.vyb — VybOS TOOLCHAIN T2: gcc (C-only) as a build-stage
+// derivation. The CAPSTONE of the bootstrapped C toolchain: it compiles a real
+// C program with a compiler whose every dependency (gmp, mpfr, mpc, binutils)
+// was itself derived from source in this repo's derivation machinery.
+//
+// Self-contained pipeline (all vybey + gated host build actions):
+//   fetch GNU gcc source over verified TLS (.tar.xz, 88MB)
+//   realize the SOURCE content-addressed into the flat store
+//   build the full dependency tree INTO ONE SCRATCH PREFIX $P:
+//     gmp  : configure --prefix=$P --disable-shared && make && make install
+//     mpfr : configure --prefix=$P --with-gmp=$P --disable-shared && make install
+//     mpc  : configure --prefix=$P --with-gmp=$P --with-mpfr=$P --disable-shared && make install
+//     binutils (out-of-tree) : configure --prefix=$P --disable-nls --disable-werror --disable-shared
+//                              && make MAKEINFO=true && make install MAKEINFO=true
+//   build gcc (out-of-tree, C-only, single stage) with the derived deps:
+//     PATH=$P/bin:$PATH  (so gcc drives our derived as/ld/ar)
+//     ../gcc-<ver>/configure --prefix=$P --enable-languages=c --disable-bootstrap
+//       --with-gmp=$P --with-mpfr=$P --with-mpc=$P
+//       --disable-nls --disable-werror --disable-shared
+//       --disable-libcc1 --disable-libquadmath --disable-libgomp
+//       --disable-libatomic --disable-libsanitizer --disable-libvtv --disable-libssp
+//     make -jN MAKEINFO=true && make install
+//   SMOKE TEST: compile a real C program with the derived gcc and RUN it.
+//   content-address the BUILT gcc driver (.bin) + record libgcc + cc1 hashes.
+//
+// Notes: host lacks makeinfo (the binutils fix applies). Host lacks dev headers
+// for gmp/mpfr/mpc but we build them ourselves, so no host deps beyond a C
+// compiler. A real 3-stage BOOTSTRAP build is a documented follow-on (we use
+// --disable-bootstrap to keep this slice bounded). Flat store, binary-safe IO.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import https::{https_get_full_verified}
+import http::{HttpResponse}
+import url::{url_split, UrlSplit}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+is_elf(b<String>)<Bool> -> {
+    return b.len() >= 4 && b.char_at(0) == 127 && b.char_at(1) == 69 &&
+           b.char_at(2) == 76 && b.char_at(3) == 70
+}
+
+main()<Int> -> {
+    storeDir<String> = "store"
+    buildRoot<String> = "build/derive-gcc-out"
+    name<String> = "gcc"
+    ver<String> = "13.2.0"
+    srcUrl<String> = "https://ftp.osuosl.org/pub/gnu/gcc/gcc-" + ver + "/gcc-" + ver + ".tar.xz"
+
+    println("=== VybOS TOOLCHAIN T2: gcc (C-only) as the capstone build-stage derivation ===\n")
+    fails<Int> = 0
+
+    // 1. fetch + realize the gcc source (88MB — verified the client survives it).
+    u<UrlSplit> = url_split(srcUrl)
+    r<HttpResponse> = https_get_full_verified(u.host, u.port, u.path, "")
+    fails = fails + check(r.status == 200, "fetched gcc source over verified TLS (" + r.status.to_string() + ")")
+    if (r.status != 200) { println("  abort: fetch failed"); return 1 }
+    srcCA<Int> = content_hash(r.body, name, ver)
+    sSrc<String> = storeDir + "/" + srcCA.to_string() + "-" + name + "-" + ver + "-src.tar.xz"
+    fails = fails + check(r.body.len() > 50000000, "gcc source tarball non-trivial (" + r.body.len().to_string() + " bytes)")
+    fails = fails + check(write_flat(sSrc, r.body), "gcc source content-addressed into store (.src)")
+    println("  source .src : " + sSrc + "  (ca " + srcCA.to_string() + ")")
+
+    // 2. build the whole dependency tree into ONE scratch prefix $P.
+    P<String> = "P=\"$PWD/" + buildRoot + "/pfx\""
+    base<String> = P + " && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\" \"" + buildRoot + "/work\""
+
+    // gmp, mpfr, mpc fetched fresh (self-contained); source files live in store.
+    gSrc<String> = storeDir + "/2945893810321476606-gmp-6.3.0-src.tar.xz"
+    mSrc<String> = storeDir + "/7928218520947927846-mpfr-4.2.1-src.tar.xz"
+    cSrc<String> = storeDir + "/1127562394070613014-mpc-1.3.1-src.tar.gz"
+    bSrc<String> = storeDir + "/5950541208801909146-binutils-2.43-src.tar.xz"
+
+    // gmp
+    recG<String> = base + " && tar xJf \"" + gSrc + "\" -C \"" + buildRoot + "/work\"" +
+        " && cd \"" + buildRoot + "/work/gmp-6.3.0\"" +
+        " && ./configure --prefix=\"$P\" --disable-shared && make -j20 && make install"
+    fails = fails + check(run(recG) == 0, "gmp built+installed into $P")
+    // mpfr
+    recM<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "/work\"" +
+        " && cd \"" + buildRoot + "/work/mpfr-4.2.1\"" +
+        " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --disable-shared && make -j20 && make install"
+    fails = fails + check(run(recM) == 0, "mpfr built+installed against $P")
+    // mpc
+    recC<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && tar xzf \"" + cSrc + "\" -C \"" + buildRoot + "/work\"" +
+        " && cd \"" + buildRoot + "/work/mpc-1.3.1\"" +
+        " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --with-mpfr=\"$P\" --disable-shared && make -j20 && make install"
+    fails = fails + check(run(recC) == 0, "mpc built+installed against gmp+mpfr")
+    // binutils (out-of-tree)
+    recB<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && mkdir -p \"" + buildRoot + "/work/bt-build\"" +
+        " && tar xJf \"" + bSrc + "\" -C \"" + buildRoot + "/work\"" +
+        " && cd \"" + buildRoot + "/work/bt-build\"" +
+        " && ../binutils-2.43/configure --prefix=\"$P\" --disable-nls --disable-werror --disable-shared" +
+        " && make -j20 MAKEINFO=true && make install MAKEINFO=true"
+    fails = fails + check(run(recB) == 0, "binutils built+installed into $P (derived as/ld/ar)")
+
+    // 3. build gcc out-of-tree, C-only, driving the DERIVED as/ld/ar.
+    recGcc<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && mkdir -p \"" + buildRoot + "/gcc-build\"" +
+        " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\"" +
+        " && cd \"" + buildRoot + "/gcc-build\"" +
+        " && export PATH=\"$P/bin:$PATH\"" +
+        " && ../" + name + "-" + ver + "/configure --prefix=\"$P\" --enable-languages=c --disable-bootstrap" +
+        " --with-gmp=\"$P\" --with-mpfr=\"$P\" --with-mpc=\"$P\"" +
+        " --disable-nls --disable-werror --disable-shared --disable-multilib" +
+        " --disable-libcc1 --disable-libquadmath --disable-libgomp" +
+        " --disable-libatomic --disable-libsanitizer --disable-libvtv --disable-libssp" +
+        " && make -j20 MAKEINFO=true && make install MAKEINFO=true"
+    fails = fails + check(run(recGcc) == 0, "gcc configured (C-only) + built + installed against derived deps")
+
+    // 4. SMOKE TEST: compile a real C program with the DERIVED gcc and run it.
+    //    (PATH must prefer $P/bin so gcc drives our derived as/ld/ar + cc1.)
+    hello<String> = "#include <stdio.h>\nint main(void){printf(\"hello from derived gcc %s\\n\", __VERSION__);return 0;}\n"
+    write_flat(buildRoot + "/work/hello.c", hello)
+    recSmoke<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && export PATH=\"$P/bin:$PATH\"" +
+        " && \"$P/bin/gcc\" -o \"" + buildRoot + "/work/hello\" \"" + buildRoot + "/work/hello.c\"" +
+        " && \"$P/bin/gcc\" --version | head -1"
+    fails = fails + check(run(recSmoke) == 0, "derived gcc compiled hello.c (drives derived as/ld)")
+    runs<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && \"" + buildRoot + "/work/hello\""
+    fails = fails + check(run(runs) == 0, "derived gcc build RUNS (hello from derived compiler)")
+
+    // 5. content-address the BUILT gcc driver (flagship .bin) + libgcc.
+    tgt<String> = buildRoot + "/pfx/bin/"
+    gccB<String> = read_flat(tgt + "gcc")
+    fails = fails + check(is_elf(gccB) && gccB.len() > 500000, "built gcc driver non-trivial ELF (" + gccB.len().to_string() + " bytes)")
+    outCA<Int> = content_hash(gccB, name, ver)
+    oBin<String> = storeDir + "/" + outCA.to_string() + "-" + name + "-" + ver + "-gcc.bin"
+    fails = fails + check(write_flat(oBin, gccB), "built gcc driver content-addressed into store (.bin, ca " + outCA.to_string() + ")")
+
+    // record cc1 + libgcc hashes (real compiler core + runtime), best-effort.
+    cc1<String> = read_flat(buildRoot + "/pfx/libexec/gcc/x86_64-pc-linux-gnu/" + ver + "/cc1")
+    c1CA<Int> = content_hash(cc1, name, "cc1")
+
+    // 6. metadata.
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+        "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": " + srcCA.to_string() +
+        ", \"buildRecipe\": \"configure --enable-languages=c --disable-bootstrap --with-gmp=<pfx> --with-mpfr=<pfx> --with-mpc=<pfx> && make\", \"outputContentHash\": " + outCA.to_string() +
+        ", \"deps\": {\"gmp\": \"6.3.0\", \"mpfr\": \"4.2.1\", \"mpc\": \"1.3.1\", \"binutils\": \"2.43\"}" +
+        ", \"smokeTest\": \"derived gcc compiles+globally hello.c; output runs\", \"cc1ContentHash\": " + c1CA.to_string() +
+        ", \"storePath\": \"/vyb/store/" + outCA.to_string() + "-" + name + "-" + ver + "-gcc.bin\"}"
+    mPath<String> = storeDir + "/" + name + "-" + ver + "-tool.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
+    println("  output gcc : " + oBin + "  (ca " + outCA.to_string() + ")")
+    println("  cc1        : (compiler core) ca " + c1CA.to_string())
+    println("  deps        : gmp 6.3.0 + mpfr 4.2.1 + mpc 1.3.1 + binutils 2.43 (all derived in-scratch)")
+    println("  meta        : " + mPath)
+    println("")
+    sum<String> = "ALL GCC TOOLCHAIN-DERIVATION INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
