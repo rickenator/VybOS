@@ -5,9 +5,11 @@
 // Pipeline (all vybey + a gated host build action):
 //   fetch GNU gmp + mpfr sources over verified TLS (.tar.xz)
 //   realize both SOURCES content-addressed into the flat store
-//   build gmp   : configure --prefix=<pfx> --disable-shared && make && make install
-//   build mpfr  : configure --prefix=<pfx> --with-gmp=<pfx> --disable-shared && make
+//   build gmp   : SOURCE_DATE_EPOCH: configure --prefix=<pfx> --disable-shared && make && make install
+//   build mpfr  : SOURCE_DATE_EPOCH: configure --prefix=<pfx> --with-gmp=<pfx> --disable-shared && make
 //   content-address the BUILT libmpfr.a + mpfr.h + dep-recording .meta.json
+//   PROVE byte-reproducibility: rebuild gmp+mpfr in an INDEPENDENT directory
+//     under the same SOURCE_DATE_EPOCH and assert libmpfr.a is byte-identical.
 //
 // Self-contained: builds its gmp dependency into a scratch prefix (a proper DAG
 // would consume the REALIZED gmp store artifact — a note for promotion).
@@ -89,19 +91,20 @@ main()<Int> -> {
 
     // 2. build the gmp dependency into a scratch prefix. Capture $P (absolute
     //    prefix) BEFORE any cd — $PWD after cd would point into the source dir.
-    gb<String> = "P=\"$PWD/" + buildRoot + "/gmp-pfx\" && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\"" +
+    //    SOURCE_DATE_EPOCH fixes ar/ranlib/gcc timestamps (reproducible-builds).
+    gb<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=\"$PWD/" + buildRoot + "/gmp-pfx\" && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\"" +
         " && tar xJf \"" + gSrc + "\" -C \"" + buildRoot + "\"" +
         " && cd \"" + buildRoot + "/" + gname + "-" + gver + "\"" +
         " && ./configure --prefix=\"$P\" --disable-shared" +
         " && make -j4 && make install"
-    fails = fails + check(run(gb) == 0, "gmp dependency built into scratch prefix ($P)")
+    fails = fails + check(run(gb) == 0, "gmp dependency built into scratch prefix ($P, SDE)")
 
     // 3. build mpfr against the (absolute) gmp prefix.
-    mb<String> = "P=\"$PWD/" + buildRoot + "/gmp-pfx\" && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "\"" +
+    mb<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=\"$PWD/" + buildRoot + "/gmp-pfx\" && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "\"" +
         " && cd \"" + buildRoot + "/" + mname + "-" + mver + "\"" +
         " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --disable-shared" +
         " && make -j4"
-    fails = fails + check(run(mb) == 0, "mpfr configured+built against gmp")
+    fails = fails + check(run(mb) == 0, "mpfr configured+built against gmp (SDE)")
 
     // 4. content-address the BUILT mpfr archive + header.
     lib<String> = read_flat(buildRoot + "/" + mname + "-" + mver + "/src/.libs/libmpfr.a")
@@ -111,6 +114,23 @@ main()<Int> -> {
     oBin<String> = storeDir + "/" + outCA + "-" + mname + "-" + mver + ".bin"
     fails = fails + check(write_flat(oBin, lib), "built libmpfr.a content-addressed into store (.bin, ca " + outCA + ")")
 
+    // 4b. PROVE byte-reproducibility: rebuild gmp+mpfr in an INDEPENDENT dir
+    //     under the same SOURCE_DATE_EPOCH and assert libmpfr.a is byte-identical.
+    rbG<String> = "export SOURCE_DATE_EPOCH=1785000000 && rm -rf " + buildRoot + "/gmp-pfx2 " + buildRoot + "/rb && mkdir -p " + buildRoot + "/gmp-pfx2 " + buildRoot + "/rb && tar xJf " + gSrc + " -C " + buildRoot + "/rb && P=$PWD/" + buildRoot + "/gmp-pfx2 && cd " + buildRoot + "/rb/gmp-" + gver + " && ./configure --prefix=$P --disable-shared && make -j4 && make install"
+        " && tar xJf \"" + gSrc + "\" -C \"" + buildRoot + "/rb\"" +
+        " && cd \"" + buildRoot + "/rb/" + gname + "-" + gver + "\"" +
+        " && ./configure --prefix=\"$P\" --disable-shared && make -j4 && make install"
+    rbM<String> = "export SOURCE_DATE_EPOCH=1785000000 && tar xJf " + mSrc + " -C " + buildRoot + "/rb && P=$PWD/" + buildRoot + "/gmp-pfx2 && cd " + buildRoot + "/rb/mpfr-" + mver + " && ./configure --prefix=$P --with-gmp=$P --disable-shared && make -j4"
+        " && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "/rb\"" +
+        " && cd \"" + buildRoot + "/rb/" + mname + "-" + mver + "\"" +
+        " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --disable-shared && make -j4"
+    fails = fails + check(run(rbG) == 0, "reprobuild gmp (independent dir, SDE)")
+    fails = fails + check(run(rbM) == 0, "reprobuild mpfr (independent dir, SDE)")
+    lib2<String> = read_flat(buildRoot + "/rb/" + mname + "-" + mver + "/src/.libs/libmpfr.a")
+    fails = fails + check(lib2.len() == lib.len(), "reprobuild libmpfr.a same size (" + lib2.len().to_string() + " B)")
+    out2CA<String> = content_hash(lib2, mname, mver)
+    fails = fails + check(out2CA.len() == 64 && out2CA == outCA, "BYTE-REPRODUCIBLE: identical libmpfr.a across independent SOURCE_DATE_EPOCH builds (" + outCA + ")")
+
     hdr<String> = read_flat(buildRoot + "/" + mname + "-" + mver + "/src/mpfr.h")
     fails = fails + check(hdr.len() > 1000, "mpfr.h header produced (" + hdr.len().to_string() + " bytes)")
 
@@ -119,11 +139,12 @@ main()<Int> -> {
     meta<String> = "{\"name\": \"" + mname + "\", \"version\": \"" + mver +
         "\", \"sourceUrl\": \"" + mUrl + "\", \"sourceContentHash\": \"" + mCA +
         "\", \"deps\": [\"" + depGmp + "\"], \"gmpSourceContentHash\": \"" + gCA +
-        "\", \"buildRecipe\": \"configure --with-gmp=<pfx> --disable-shared && make\", \"outputContentHash\": \"" + outCA +
-        "\", \"storePath\": \"/vyb/store/" + outCA + "-" + mname + "-" + mver + ".bin\"}"
+        "\", \"buildRecipe\": \"SOURCE_DATE_EPOCH configure --with-gmp=<pfx> --disable-shared && make\", \"outputContentHash\": \"" + outCA +
+        "\", \"reproBuild\": \"" + out2CA + "\", \"storePath\": \"/vyb/store/" + outCA + "-" + mname + "-" + mver + ".bin\"}"
     mPath<String> = storeDir + "/" + mname + "-" + mver + "-tool.meta.json"
     fails = fails + check(write_flat(mPath, meta), "toolchain metadata written (.meta.json)")
     println("  output .bin : " + oBin + "  (ca " + outCA + ")")
+    println("  reprodu     : " + out2CA + "  (identical? see the invariant above)")
     println("  deps        : gmp " + gver + " (scratch; store-input DAG is a follow-on)")
     println("  meta        : " + mPath)
     println("")
