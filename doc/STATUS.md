@@ -147,6 +147,12 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     version string shows `gcc (GCC) 13.2.0, GNU ld 2.43` (the derived
     compiler). The fetched QEMU vmlinuz is now replaceable by a derived kernel —
     giving build.plan a real `linux-6.6-vyb`.
+21. **TOOLCHAIN SOURCE_DATE_EPOCH DETERMINISM** — the GNU-lib + ELF toolchain
+    slices export `SOURCE_DATE_EPOCH` (reproducible-builds). gmp+mpfr
+    (`build-derive-mpfr.vyb`) PROVEN byte-reproducible across independent
+    dirs; binutils (`build-derive-binutils.vyb`) PROVEN for `ld` across clean
+    in-place rebuilds; gcc tower (`build-derive-gcc.vyb`) flagged (SDE applied,
+    full proof deferred — see skill).
 20. **BYTE-DETERMINISTIC KERNEL (path-independent)** — the kernel derivation fixes
     `KBUILD_BUILD_TIMESTAMP/USER/HOST` + `SOURCE_DATE_EPOCH` + gcc
     `-frandom-seed`/`-fno-guess-branch-probability` + `-ffile-prefix-map=$B/=`, and

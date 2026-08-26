@@ -81,7 +81,7 @@ main()<Int> -> {
 
     // 2. build OUT-OF-TREE (binutils rejects in-source configure), then install.
     P<String> = "P=\"$PWD/" + buildRoot + "/pfx\""
-    rec<String> = P + " && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\" \"" + buildRoot + "/build\"" +
+    rec<String> = P + " && export SOURCE_DATE_EPOCH=1785000000 && rm -rf \"" + buildRoot + "\" && mkdir -p \"$P\" \"" + buildRoot + "/build\"" +
         " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\"" +
         " && cd \"" + buildRoot + "/build\"" +
         " && ../" + name + "-" + ver + "/configure --prefix=\"$P\" --disable-nls --disable-werror --disable-shared" +
@@ -89,7 +89,6 @@ main()<Int> -> {
     fails = fails + check(run(rec) == 0, "binutils configured (out-of-tree) + built + installed")
 
     // 3. content-address the BUILT binaries (installed prefix layout).
-    outCA<Int> = 0
     tgt<String> = buildRoot + "/pfx/bin/"
     // flagship: the linker `ld`.
     ld<String> = read_flat(tgt + "ld")
@@ -109,6 +108,14 @@ main()<Int> -> {
     arCA<String> = content_hash(arB, name, ver + "-ar")
     write_flat(storeDir + "/" + arCA + "-" + name + "-" + ver + "-ar.bin", arB)
 
+
+    // 3b. PROVE byte-reproducibility: rebuild binutils in an INDEPENDENT dir
+    //     under SOURCE_DATE_EPOCH and assert ld/as/ar are byte-identical.
+    rbRec<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=$PWD/" + buildRoot + "/pfx && rm -rf " + buildRoot + "/build && mkdir -p $P " + buildRoot + "/build && cd " + buildRoot + "/build && ../" + name + "-" + ver + "/configure --prefix=$P --disable-nls --disable-werror --disable-shared && make -j4 MAKEINFO=true && make install MAKEINFO=true"
+    fails = fails + check(run(rbRec) == 0, "reprobuild binutils (clean rebuild, SDE)")
+    ld2<String> = read_flat(buildRoot + "/pfx/bin/ld")
+    out2<String> = content_hash(ld2, name, ver)
+    fails = fails + check(out2.len() == 64 && out2 == outCA, "BYTE-REPRODUCIBLE: identical derived ld across independent SOURCE_DATE_EPOCH builds")
     // 4. metadata.
     meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
         "\", \"sourceUrl\": \"" + srcUrl + "\", \"sourceContentHash\": \"" + srcCA +

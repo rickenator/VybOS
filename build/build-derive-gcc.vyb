@@ -105,17 +105,17 @@ main()<Int> -> {
         " && ./configure --prefix=\"$P\" --disable-shared && make -j20 && make install"
     fails = fails + check(run(recG) == 0, "gmp built+installed into $P")
     // mpfr
-    recM<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "/work\"" +
+    recM<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=\"$PWD/" + buildRoot + "/pfx\" && tar xJf \"" + mSrc + "\" -C \"" + buildRoot + "/work\"" +
         " && cd \"" + buildRoot + "/work/mpfr-4.2.1\"" +
         " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --disable-shared && make -j20 && make install"
     fails = fails + check(run(recM) == 0, "mpfr built+installed against $P")
     // mpc
-    recC<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && tar xzf \"" + cSrc + "\" -C \"" + buildRoot + "/work\"" +
+    recC<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=\"$PWD/" + buildRoot + "/pfx\" && tar xzf \"" + cSrc + "\" -C \"" + buildRoot + "/work\"" +
         " && cd \"" + buildRoot + "/work/mpc-1.3.1\"" +
         " && ./configure --prefix=\"$P\" --with-gmp=\"$P\" --with-mpfr=\"$P\" --disable-shared && make -j20 && make install"
     fails = fails + check(run(recC) == 0, "mpc built+installed against gmp+mpfr")
     // binutils (out-of-tree)
-    recB<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && mkdir -p \"" + buildRoot + "/work/bt-build\"" +
+    recB<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=\"$PWD/" + buildRoot + "/pfx\" && mkdir -p \"" + buildRoot + "/work/bt-build\"" +
         " && tar xJf \"" + bSrc + "\" -C \"" + buildRoot + "/work\"" +
         " && cd \"" + buildRoot + "/work/bt-build\"" +
         " && ../binutils-2.43/configure --prefix=\"$P\" --disable-nls --disable-werror --disable-shared" +
@@ -123,7 +123,7 @@ main()<Int> -> {
     fails = fails + check(run(recB) == 0, "binutils built+installed into $P (derived as/ld/ar)")
 
     // 3. build gcc out-of-tree, C-only, driving the DERIVED as/ld/ar.
-    recGcc<String> = "P=\"$PWD/" + buildRoot + "/pfx\" && mkdir -p \"" + buildRoot + "/gcc-build\"" +
+    recGcc<String> = "export SOURCE_DATE_EPOCH=1785000000 && P=\"$PWD/" + buildRoot + "/pfx\" && mkdir -p \"" + buildRoot + "/gcc-build\"" +
         " && tar xJf \"" + sSrc + "\" -C \"" + buildRoot + "\"" +
         " && cd \"" + buildRoot + "/gcc-build\"" +
         " && export PATH=\"$P/bin:$PATH\"" +
