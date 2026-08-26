@@ -160,6 +160,11 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
   `github.com/vim/vim/archive/refs/tags/v9.1.0.tar.gz` now fetch 200 (bytes
   match codeload). The codeload workaround in `modules/vim.vyb` still works but
   is no longer required.
+- **#195 (M2 tracking, filed 2026-08-25)** — `rickenator/Vyb#195` is the
+  single tracking issue for the **M2 build-framework primitives RFE**
+  (`doc/RFE-M2.md`): Item 1 `mkdir` (P0), Item 2 SHA-256 (P0), Item 3
+  tar/gzip extract (P1), Item 4 `url` stdlib parser (P1). Body links the full
+  spec doc. Track impl-agent progress there.
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 

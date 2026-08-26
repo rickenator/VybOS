@@ -1,5 +1,9 @@
 # RFE — VybOS M2: primitives to build a real dependency graph
 
+> **Tracking:** filed as `rickenator/Vyb` **#195**
+> https://github.com/rickenator/Vyb/issues/195 (OPEN, 2026-08-25). Cross-link
+> from STATUS §3.
+
 Forward this whole file to the Vyb implementation agent. Every item is
 self-contained: goal, verified current state (exact file:line), numbered
 requirements, acceptance line. Companion project: `~/Projects/VybOS`
