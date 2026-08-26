@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (full 256-bit hex content addresses + NESTED store via stdlib mkdir; full derived boot chain)
+> last_updated: 2026-08-25 (full 256-bit hex + NESTED store; derived QEMU tree packaged; full derived boot chain)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -147,6 +147,11 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     version string shows `gcc (GCC) 13.2.0, GNU ld 2.43` (the derived
     compiler). The fetched QEMU vmlinuz is now replaceable by a derived kernel —
     giving build.plan a real `linux-6.6-vyb`.
+19. **PACKAGED DERIVED QEMU TREE** — `build/build-package-qemu.vyb` stitches the
+    QEMU-from-source runtime (the derived `qemu-system-x86_64` ELF + its linked
+    libglib + the `pc-bios` SeaBIOS firmware) into ONE NESTED store entry
+    `store/<qca>/`. The full roll-your-own boot now uses ONLY store artifacts —
+    no scratch prefix, no host qemu/host glib. Verified: derived kernel → VYBOS_READY.
 18. **DERIVED HYPERVISOR (QEMU-from-source)** — `build/build-derive-qemu.vyb`:
     builds `qemu-system-x86_64` 8.2.2 from source (isolated venv meson +
     libffi + pixman + glib, pinned source versions) so the boot proof never

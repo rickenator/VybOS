@@ -1,0 +1,107 @@
+// build-package-qemu.vyb — package the DERIVED QEMU tree into the nested store.
+//
+// The QEMU derivation (build-derive-qemu.vyb) content-addresses only the
+// qemu-system-x86_64 ELF; its runtime needs (a) the derived glib it links and
+// (b) its pc-bios firmware. This slice stitches the whole runtime tree into a
+// self-contained NESTED store entry, so the boot proof needs NO scratch prefix:
+//     store/<qemu-ca>/qemu-system-x86_64
+//     store/<qemu-ca>/lib/libglib-2.0.so.0.8000.0 (+ gmodule/gobject/gthread)
+//     store/<qemu-ca>/pc-bios/<firmware>          (SeaBIOS bios-256k.bin, ...)
+// It consumes the QEMU derivation's scratch prefix (build/derive-qemu-out),
+// then the launcher can boot purely from store:
+//   tools/vybos-run --runtime qemu --kernel <bz> \
+//     --qemu store/<ca>/qemu-system-x86_64 \
+//     --qemu-libdir store/<ca>/lib \
+//     --qemu-data store/<ca>/pc-bios --test
+
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import vybos::{content_hash}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// run a host command (gated); returns exit code or -1 if it couldn't launch.
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+// read a file's bytes ("" if unreadable).
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+share(all)
+main()<Int> -> {
+    println("=== VybOS: PACKAGE the derived QEMU tree into the nested store ===\n")
+    fails<Int> = 0
+
+    storeDir<String> = "store"
+    name<String> = "qemu"
+    ver<String> = "8.2.2"
+
+    // 1. the derived qemu binary (the QEMU derivation's output ELF).
+    bPath<String> = "build/derive-qemu-out/qemu-8.2.2/build/qemu-system-x86_64"
+    qbin<String> = read_flat(bPath)
+    fails = fails + check(qbin.len() > 10000000, "derived qemu binary readable (" + qbin.len().to_string() + " bytes)")
+    elf<Bool> = (qbin.len() >= 4 && qbin.char_at(0) == 127 && qbin.char_at(1) == 69 &&
+                 qbin.char_at(2) == 76 && qbin.char_at(3) == 70)
+    fails = fails + check(elf, "derived qemu is an ELF")
+
+    // 2. content-address the tree by the qemu binary digest.
+    ca<String> = content_hash(qbin, name, ver)
+
+    // 3. stage the tree with host cp (robust for many binary files); then it is
+    //    a fully nested store entry. (cp is a packaging transport — the CONTENT
+    //    is still the derived qemu + derived glib + pc-bios from the derivation.)
+    pfxLib<String> = "build/derive-qemu-out/pfx/lib/x86_64-linux-gnu"
+    pcBios<String> = "build/derive-qemu-out/qemu-8.2.2/pc-bios"
+    rec<String> = "D=\"$PWD/" + storeDir + "/" + ca + "\" && rm -rf \"$D\" && mkdir -p \"$D/lib\" \"$D/pc-bios\"" +
+        " && cp \"" + bPath + "\" \"$D/qemu-system-x86_64\"" +
+        " && cp \"" + pfxLib + "/libglib-2.0.so.0.8000.0\" \"" + pfxLib + "/libgobject-2.0.so.0.8000.0\"" +
+        " \"" + pfxLib + "/libgmodule-2.0.so.0.8000.0\" \"" + pfxLib + "/libgthread-2.0.so.0.8000.0\" \"$D/lib/\"" +
+        " && cp -rL \"" + pcBios + "\"/* \"$D/pc-bios/\""
+    fails = fails + check(run(rec) == 0, "stage nested store entry (" + storeDir + "/" + ca + ")")
+
+    // 4. on-disk verification.
+    fails = fails + check(read_flat(storeDir + "/" + ca + "/qemu-system-x86_64").len() > 10000000, "qemu staged in store entry")
+    fails = fails + check(read_flat(storeDir + "/" + ca + "/lib/libglib-2.0.so.0.8000.0").len() > 1000, "derived glib staged")
+    fails = fails + check(read_flat(storeDir + "/" + ca + "/pc-bios/bios-256k.bin").len() > 1000, "SeaBIOS staged (bios-256k.bin)")
+
+    // 5. metadata.
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver +
+        "\", \"kind\": \"derived-qemu-tree\", \"contentHash\": \"" + ca +
+        "\", \"tree\": [\"" + storeDir + "/" + ca + "/qemu-system-x86_64\"," +
+        " \"" + storeDir + "/" + ca + "/lib/libglib-2.0.so.0.8000.0\", \"" + storeDir + "/" + ca + "/pc-bios/bios-256k.bin\"]," +
+        " \"launcher\": \"--qemu " + storeDir + "/" + ca + "/qemu-system-x86_64 --qemu-libdir " + storeDir + "/" + ca +
+        "/lib --qemu-data " + storeDir + "/" + ca + "/pc-bios\"}"
+    mPath<String> = storeDir + "/qemu-8.2.2-tree.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "qemu-tree metadata written (" + mPath + ")")
+
+    println("  staged tree : " + storeDir + "/" + ca + "/")
+    println("  launcher    : --qemu " + storeDir + "/" + ca + "/qemu-system-x86_64 --qemu-libdir " + storeDir + "/" + ca + "/lib --qemu-data " + storeDir + "/" + ca + "/pc-bios")
+    println("")
+    sum<String> = "ALL QEMU-TREE PACKAGING INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
