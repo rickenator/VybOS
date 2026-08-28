@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # tools/vybos-run — VybOS rootfs/QEMU launcher (issue #1 launcher shape).
 #
-# Boots the staged VybOS rootfs (default build/rootfs-out) to a defined
-# VYBOS_READY state. A temp overlay copy is seeded with a static BusyBox
-# userspace (host /usr/bin/busybox) so the rootfs is a self-contained /, and
-# the config-driven /init runs to READY. The canonical rootfs is NEVER
-# modified — writes happen only in the disposable overlay (tmp, rm'd on exit
-# unless --keep).
+# Boots a VybOS build artifact to a defined VYBOS_READY state. Two shapes:
+#   (a) ROOTFS modes (bwrap/docker, and qemu as kernel+initramfs): stage the
+#       materialized rootfs into a disposable overlay seeded with static
+#       BusyBox; /init runs to READY. The canonical rootfs is NEVER modified.
+#   (b) DISK mode (qemu, --disk <rootdisk.img>): boot a PERSISTENT raw ext4
+#       root image as a real mounted root (root=/dev/vda) under the DERIVED
+#       kernel — this is B5. The image already contains busybox + /init; state
+#       persists across boots. No overlay, no initramfs.
 # Runtimes:
 #   bwrap  (default)  container-rootfs boot in a disposable bubblewrap sandbox (unprivileged)
 #   docker            container-rootfs boot via docker import + run (needs docker daemon + group)
-#   qemu              QEMU kernel+initramfs self-boot (Option A / B4): boots the rootfs as
-#                     an initramfs under a Linux kernel (derived store bzImage --kernel, or cached
-#                     Alpine netboot vmlinuz-virt), reaches READY on the serial console.
+#   qemu  (+rootfs)   kernel+initramfs self-boot (B4): rootfs as initramfs under a kernel
+#   qemu  (+--disk)   PERSISTENT root/disk self-boot (B5): raw ext4 root image mounted as /dev/vda
 #
-# Honest scope: bwrap/docker are CONTAINER-ROOTFS boots (B1 + B3-lite). qemu is
-# a real kernel+initramfs boot (B4, Option A) — this is what closes the
-# "bootable image" line. Userspace in all modes is a stand-in static BusyBox,
-# seeded at launch, until VybOS ships its own. A persistent root/disk image
-# (B5), SSH-in-guest, and guest virtiofs are still ahead — the corresponding
-# flags (--disk, --ssh-port, --share-vyb) are recognized and rejected clearly.
+# Honest scope: bwrap/docker are CONTAINER-ROOTFS boots (B1 + B3-lite). qemu
+# closes the "bootable image" line. Userspace in all modes is a stand-in static
+# BusyBox until VybOS ships its own. A bootloader, atomic gen-switch, and guest
+# SSH/virtiofs are still ahead — --ssh-port/--share-vyb are recognized and
+# rejected clearly.
 #
 # Usage:
 #   tools/vybos-run [OPTIONS]
@@ -32,7 +32,9 @@
 #     --busybox <path>  static busybox to seed (default /usr/bin/busybox)
 #
 #   QEMU options (--runtime qemu):
-#     --kernel <bzImage>     explicit kernel bzImage (derived store one, or cached vmlinuz-virt)
+#     --disk <img>           boot a PERSISTENT raw ext4 root image (B5); requires the
+#                            DERIVED kernel (ext4+virtio built-in). Auto-found in store/.
+#     --kernel <bzImage>     explicit kernel bzImage (for --disk use the derived one)
 #     --memory <size>        guest RAM for -m (default 256M)
 #     --cpus <n>             vCPUs for -smp (default 1)
 #     --headless             serial-only, -nographic (DEFAULT)
@@ -45,9 +47,8 @@
 #     --qemu-data <dir>      # QEMU -L data dir (pc-bios firmware) for a bare derived qemu
 #
 #   Pending (rejected with a clear message today; see doc/PLAN-QEMU-LAUNCHER.md):
-#     --disk <img>           # persistent root/disk image (B5) — not built yet
 #     --ssh-port <port>      # needs VybOS to actually run SSH
-#     --share-vyb <dir>      # guest virtiofs/9p — needs a disk-image based boot
+#     --share-vyb <dir>      # guest virtiofs/9p — needs a disk-image based boot + guest drivers
 #
 set -uo pipefail
 
@@ -58,6 +59,7 @@ VYB="${VYB:-$HOME/Projects/Vyb-vybos/build/vyb}"
 VYB_STDLIB="${VYB_STDLIB:-$HOME/Projects/Vyb-vybos/stdlib}"
 BUSYBOX="${BUSYBOX:-/usr/bin/busybox}"
 KERNEL="${VYBOS_KERNEL:-}"
+DISK="${VYBOS_DISK:-}"
 # A DERIVED QEMU (build-derive-qemu.vyb) can be supplied explicitly so the boot
 # proof never ASSUMES host qemu; falls back to qemu-system-x86_64 on PATH.
 QEMU_BIN="${VYBOS_QEMU:-qemu-system-x86_64}"
@@ -80,6 +82,7 @@ while [ $# -gt 0 ]; do
     --keep) KEEP=1 ;;
     --rootfs) ROOTFS="$2"; shift ;;
     --runtime) RUNTIME="$2"; shift ;;
+    --disk) DISK="$2"; shift ;;
     --kernel) KERNEL="$2"; shift ;;
     --memory) MEMORY="$2"; shift ;;
     --cpus) CPUS="$2"; shift ;;
@@ -92,36 +95,64 @@ while [ $# -gt 0 ]; do
     --qemu-libdir) QEMU_LIBDIR="$2"; shift ;;
     --qemu-data) QEMU_DATA="$2"; shift ;;
     --busybox) BUSYBOX="$2"; shift ;;
-    --disk) echo "error: --disk needs a built persistent root/disk image (B5), not produced yet — see doc/PLAN-BUILD-DERIVATIONS+PLAN_BOOTABLE_IMAGE" >&2; exit 2 ;;
     --ssh-port) echo "error: --ssh-port needs VybOS to actually run SSH in-guest — not yet" >&2; exit 2 ;;
-    --share-vyb) echo "error: --share-vyb needs a disk-image based boot (guest virtiofs/9p) — pending B5" >&2; exit 2 ;;
+    --share-vyb) echo "error: --share-vyb needs a disk-image based boot + guest virtiofs/9p drivers — pending" >&2; exit 2 ;;
     -h|--help) grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
-# 1. rootfs must be materialized (build it if absent).
-if [ ! -d "$ROOTFS/etc/vyb-os" ]; then
-  echo "rootfs not materialized; running build-rootfs.vyb..." >&2
-  ( cd "$ROOT" && VYB_STDLIB="$VYB_STDLIB" "$VYB" build/build-rootfs.vyb --module-path modules ) >&2 || { echo "build-rootfs failed" >&2; exit 1; }
-fi
-if [ ! -f "$ROOTFS/init" ]; then
-  echo "rootfs has no /init (rebuild with the current modules)" >&2; exit 1
+if [ -n "$DISK" ] && [ "$RUNTIME" != qemu ]; then
+  echo "error: --disk <img> requires --runtime qemu (bwrap/docker boot the rootfs overlay, not a disk image)" >&2
+  exit 2
 fi
 
-# 2. disposable overlay: copy rootfs, seed static busybox + RELATIVE applet links.
-OVL=$(mktemp -d /tmp/vybos-run.XXXXXX)
-cleanup() { [ "$KEEP" = 0 ] && rm -rf "$OVL"; }
-trap cleanup EXIT
-cp -a "$ROOTFS"/. "$OVL"/
-mkdir -p "$OVL/bin"
-cp "$BUSYBOX" "$OVL/bin/busybox"; chmod +x "$OVL/bin/busybox"
-"$OVL/bin/busybox" --install -s "$OVL/bin" >/dev/null 2>&1 || true
-# busybox --install makes ABSOLUTE symlinks (-> /tmp/.../busybox) that dangle
-# once the overlay is the sandbox root; rewrite applet links to RELATIVE
-# `busybox` so they resolve inside the booted root.
-python3 - "$OVL/bin" <<'PY'
+# kernel resolution for qemu: --kernel wins; a --disk boot requires the DERIVED
+# kernel (ext4 + virtio-blk built-in — the Alpine netboot vmlinuz can't mount a
+# disk root); otherwise the cached Alpine netboot vmlinuz (initramfs boot).
+resolve_kernel() {
+  if [ -n "$KERNEL" ]; then echo "$KERNEL"; return; fi
+  if [ -n "$DISK" ]; then
+    local k; k="$(find "$ROOT/store" -name 'linux-6.6-bzImage.bin' 2>/dev/null | head -1)"
+    if [ -z "$k" ]; then
+      echo "error: --disk needs the DERIVED kernel (ext4+virtio=y); none in store/. Build it (build/build-derive-kernel.vyb) or pass --kernel <bzImage>." >&2
+      exit 1
+    fi
+    echo "$k"
+  else
+    local k="$ROOT/build/kernel-cache/vmlinuz-virt"
+    if [ ! -s "$k" ]; then
+      mkdir -p "$ROOT/build/kernel-cache"
+      echo "fetching kernel -> $k" >&2
+      curl -sSL -o "$k" "$KERNEL_URL" || { echo "kernel fetch failed" >&2; exit 1; }
+    fi
+    echo "$k"
+  fi
+}
+
+# 1. rootfs must be materialized — only needed for the OVERLAY (rootfs) modes,
+#    not for a --disk boot (the disk image is already self-contained).
+OVL=""
+if [ -z "$DISK" ]; then
+  if [ ! -d "$ROOTFS/etc/vyb-os" ]; then
+    echo "rootfs not materialized; running build-rootfs.vyb..." >&2
+    ( cd "$ROOT" && VYB_STDLIB="$VYB_STDLIB" "$VYB" build/build-rootfs.vyb --module-path modules ) >&2 || { echo "build-rootfs failed" >&2; exit 1; }
+  fi
+  if [ ! -f "$ROOTFS/init" ]; then
+    echo "rootfs has no /init (rebuild with the current modules)" >&2; exit 1
+  fi
+
+  # 2. disposable overlay: copy rootfs, seed static busybox + RELATIVE applet links.
+  OVL=$(mktemp -d /tmp/vybos-run.XXXXXX)
+  cp -a "$ROOTFS"/. "$OVL"/
+  mkdir -p "$OVL/bin"
+  cp "$BUSYBOX" "$OVL/bin/busybox"; chmod +x "$OVL/bin/busybox"
+  "$OVL/bin/busybox" --install -s "$OVL/bin" >/dev/null 2>&1 || true
+  # busybox --install makes ABSOLUTE symlinks (-> /tmp/.../busybox) that dangle
+  # once the overlay is the sandbox root; rewrite applet links to RELATIVE
+  # `busybox` so they resolve inside the booted root.
+  python3 - "$OVL/bin" <<'PY'
 import os, sys
 d = sys.argv[1]
 for n in os.listdir(d):
@@ -129,6 +160,9 @@ for n in os.listdir(d):
     if os.path.islink(p) and n != "busybox":
         os.unlink(p); os.symlink("busybox", p)
 PY
+fi
+trap 'cleanup' EXIT
+cleanup() { [ "$KEEP" = 0 ] && [ -n "$OVL" ] && rm -rf "$OVL"; }
 
 # 3. boot it.
 case "$RUNTIME" in
@@ -138,28 +172,13 @@ case "$RUNTIME" in
     rc=$?
     ;;
   docker)
-    # faithful container-rootfs: import the overlay as an ephemeral image, run /init.
     ( cd "$OVL" && tar -c . | docker import - vybos:rootfs >/dev/null 2>&1 )
     OUT=$(docker run --rm --read-only vybos:rootfs /bin/sh /init 2>&1)
     rc=$?
     ;;
   qemu)
-    # kernel: explicit --kernel, else cached Alpine netboot vmlinuz-virt.
-    if [ -z "$KERNEL" ]; then
-      KC="$ROOT/build/kernel-cache"; KERNEL="$KC/vmlinuz-virt"
-      if [ ! -s "$KERNEL" ]; then
-        mkdir -p "$KC"
-        echo "fetching kernel -> $KERNEL" >&2
-        curl -sSL -o "$KERNEL" "$KERNEL_URL" || { echo "kernel fetch failed" >&2; exit 1; }
-      fi
-    fi
-    if [ ! -s "$KERNEL" ]; then echo "no usable kernel at $KERNEL" >&2; exit 1; fi
-    # kernel execve of /init needs the exec bit (staged 0644 -> EACCES otherwise).
-    chmod +x "$OVL/init"
-    IR=$(mktemp -d /tmp/vybos-run-qemu.XXXXXX)
-    cp -a "$OVL"/. "$IR"/
-    INITRD=$(mktemp /tmp/vybos-initrd.XXXXXX)
-    ( cd "$IR" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -1 ) > "$INITRD"
+    KERNEL="$(resolve_kernel)"
+    [ -s "$KERNEL" ] || { echo "no usable kernel at $KERNEL" >&2; exit 1; }
 
     # use a DERIVED qemu if given; its glib lives in --qemu-libdir (LD_LIBRARY_PATH)
     # and its firmware in --qemu-data (QEMU -L).
@@ -178,44 +197,69 @@ case "$RUNTIME" in
     fi
     mkdir -p "$(dirname "$LOGFILE")"
 
-    # print effective launch params (issue: don't boot blind).
-    echo "runtime=qemu kernel=$KERNEL memory=$MEMORY cpus=$CPUS accel=$ACCEL qemu=$QEMU_BIN" >&2
-    echo "serial log -> $LOGFILE" >&2
-
-    # QEMU invocation (serial -> THE log so it is captured on failure too).
-    QARGS=(-m "$MEMORY" -smp "$CPUS" -accel "$ACCEL" -kernel "$KERNEL" -initrd "$INITRD")
-    [ "$GDB" = 1 ] && QARGS+=(-gdb tcp::1234 -S)
-    if [ "$HEADLESS" = 1 ]; then
-      QARGS+=(-append "console=ttyS0 rdinit=/init" -nographic -no-reboot)
+    if [ -n "$DISK" ]; then
+      # ---- DISK boot (B5): persistent root image mounted as /dev/vda ----
+      if [ ! -s "$DISK" ]; then echo "no usable disk image at $DISK" >&2; exit 1; fi
+      echo "runtime=qemu disk=$DISK kernel=$KERNEL memory=$MEMORY cpus=$CPUS accel=$ACCEL qemu=$QEMU_BIN" >&2
+      echo "serial log -> $LOGFILE" >&2
+      QARGS=(-m "$MEMORY" -smp "$CPUS" -accel "$ACCEL" -kernel "$KERNEL" -drive "file=$DISK,format=raw,if=virtio")
+      [ "$GDB" = 1 ] && QARGS+=(-gdb tcp::1234 -S)
+      if [ "$HEADLESS" = 1 ]; then QARGS+=(-append "root=/dev/vda rw init=/init console=ttyS0" -nographic -no-reboot)
+      else QARGS+=(-append "root=/dev/vda rw init=/init console=ttyS0" -no-reboot); fi
+      [ ${#QDATA[@]} -gt 0 ] && QARGS+=("${QDATA[@]}")
+      "$QEMU_BIN" "${QARGS[@]}" > "$LOGFILE" 2>&1 &
+      QPID=$!
+      i=0; ready=0
+      while [ $i -lt 360 ]; do
+        grep -q 'VYBOS_READY=1' "$LOGFILE" 2>/dev/null && { ready=1; break; }
+        kill -0 "$QPID" 2>/dev/null || break
+        sleep 0.5; i=$((i+1))
+      done
+      [ "$KEEP" = 1 ] || kill "$QPID" 2>/dev/null
+      wait "$QPID" 2>/dev/null
+      rc=0; [ "$ready" = 1 ] || rc=1
+      OUT="$(cat "$LOGFILE")"
     else
-      QARGS+=(-append "console=ttyS0 rdinit=/init" -no-reboot)
+      # ---- kernel+initramfs boot of the staged rootfs ----
+      chmod +x "$OVL/init"
+      IR=$(mktemp -d /tmp/vybos-run-qemu.XXXXXX)
+      cp -a "$OVL"/. "$IR"/
+      INITRD=$(mktemp /tmp/vybos-initrd.XXXXXX)
+      ( cd "$IR" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -1 ) > "$INITRD"
+      echo "runtime=qemu rootfs-initramfs kernel=$KERNEL memory=$MEMORY cpus=$CPUS accel=$ACCEL qemu=$QEMU_BIN" >&2
+      echo "serial log -> $LOGFILE" >&2
+      QARGS=(-m "$MEMORY" -smp "$CPUS" -accel "$ACCEL" -kernel "$KERNEL" -initrd "$INITRD")
+      [ "$GDB" = 1 ] && QARGS+=(-gdb tcp::1234 -S)
+      if [ "$HEADLESS" = 1 ]; then QARGS+=(-append "console=ttyS0 rdinit=/init" -nographic -no-reboot)
+      else QARGS+=(-append "console=ttyS0 rdinit=/init" -no-reboot); fi
+      [ ${#QDATA[@]} -gt 0 ] && QARGS+=("${QDATA[@]}")
+      "$QEMU_BIN" "${QARGS[@]}" > "$LOGFILE" 2>&1 &
+      QPID=$!
+      i=0; ready=0
+      while [ $i -lt 360 ]; do
+        grep -q 'VYBOS_READY=1' "$LOGFILE" 2>/dev/null && { ready=1; break; }
+        kill -0 "$QPID" 2>/dev/null || break
+        sleep 0.5; i=$((i+1))
+      done
+      [ "$KEEP" = 1 ] || kill "$QPID" 2>/dev/null
+      wait "$QPID" 2>/dev/null
+      rm -rf "$IR" "$INITRD"
+      rc=0; [ "$ready" = 1 ] || rc=1
+      OUT="$(cat "$LOGFILE")"
     fi
-    [ ${#QDATA[@]} -gt 0 ] && QARGS+=("${QDATA[@]}")
-    "$QEMU_BIN" "${QARGS[@]}" > "$LOGFILE" 2>&1 &
-    QPID=$!
-    # wait up to ~180s for the READY marker on serial (TCG is slow; no /dev/kvm).
-    i=0; ready=0
-    while [ $i -lt 360 ]; do
-      grep -q 'VYBOS_READY=1' "$LOGFILE" 2>/dev/null && { ready=1; break; }
-      kill -0 "$QPID" 2>/dev/null || break
-      sleep 0.5; i=$((i+1))
-    done
-    [ "$KEEP" = 1 ] || kill "$QPID" 2>/dev/null
-    wait "$QPID" 2>/dev/null
-    rm -rf "$IR" "$INITRD"
-    rc=0; [ "$ready" = 1 ] || rc=1
-    OUT="$(cat "$LOGFILE")"
     ;;
   *)
     echo "unknown --runtime: $RUNTIME" >&2; exit 2 ;;
 esac
 echo "$OUT"
 
-# 4. validate: config paths present in the root + init reached READY.
+# 4. validate config paths present for overlay modes; a --disk boot is self-contained.
 paths_ok=1
-for p in /etc/vyb-os/system.json /etc/vyb-os/version /etc/vyb-os/hostname /etc/vyb-os/services.sh /init; do
-  if [ ! -e "$OVL$p" ]; then echo "MISSING (root): $p" >&2; paths_ok=0; fi
-done
+if [ -n "$OVL" ]; then
+  for p in /etc/vyb-os/system.json /etc/vyb-os/version /etc/vyb-os/hostname /etc/vyb-os/services.sh /init; do
+    if [ ! -e "$OVL$p" ]; then echo "MISSING (root): $p" >&2; paths_ok=0; fi
+  done
+fi
 ready=0
 echo "$OUT" | grep -q 'VYBOS_READY=1' && ready=1
 echo ""

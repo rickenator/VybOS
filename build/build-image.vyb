@@ -1,0 +1,200 @@
+// build-image.vyb — VybOS B5: persistent root/disk image from the composed spec.
+//
+// Pipeline:
+//   config (modules) -> compose() -> SystemSpec -> compose_issue gate
+//     -> rootfs_files(spec)   (pure: ordered path->content FileEntry list,
+//                               modules/rootfs.vyb)
+//     -> STAGE the rootfs tree (Vyb writes each file; mkdir via freedom exec)
+//     -> HOST recipe: seed static busybox + RELATIVE applets, chmod +x /init,
+//        mke2fs -d  ->  a RAW ext4 root image (build/image-out/vybos-root.img)
+//     -> content-address the IMAGE bytes (host sha256sum of real bytes; a 60MB
+//        image is too big to hold as one Vyb String w/o hitting the string-
+//        registry ceiling, so the digest is computed on the host — a build
+//        transport, still real content-addressing)
+//     -> NESTED store entry: store/<ca>/vybos-0.1-root.img + .meta.json
+//
+// The image uniquely satisfies B5's "persistent root/disk" (kernel boots it as
+// a real mounted root, not an ephemeral initramfs): the DERIVED kernel mounts
+// it as /dev/vda (CONFIG_EXT4_FS=y + VIRTIO_BLK=y are built-in), reaches
+// VYBOS_READY, and state persists across boots. Boot: 
+//   qemu ... -kernel store/.../linux-6.6-bzImage.bin -drive file=store/<ca>/vybos-0.1-root.img,format=raw,if=virtio
+//            -append "root=/dev/vda rw init=/init console=ttyS0"
+// (tools/vybos-run --disk wires this.)
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import compose::{Module, blank_system, compose, compose_issue}
+import plan::{SystemSpec}
+import rootfs::{FileEntry, rootfs_files}
+import sshd::{sshd}
+import getty::{getty}
+import vim::{vim}
+import nginx::{nginx}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+// run a host command (gated); returns exit code or -1 if it couldn't launch.
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+// read a whole file ("" on failure/absence).
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+parent_dir(p<String>)<String> -> {
+    l<Int> = p.len()
+    last<Int> = -1
+    if (l > 0) {
+        for (i in 0..l-1) { if (p.char_at(i) == 47) { last = i } }
+    }
+    if (last >= 0) { return p.substring(0, last) }
+    return "/"
+}
+
+stage_file(stage<String>, e<FileEntry>)<Bool> -> {
+    path<String> = stage + e.path
+    par<String> = stage + parent_dir(e.path)
+    if (run("mkdir -p \"" + par + "\"") != 0) { return false }
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, e.content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+share(all)
+main()<Int> -> {
+    println("=== VybOS B5: persistent root/disk image (ext4, derived-kernel root) ===\n")
+    fails<Int> = 0
+
+    OUTD<String> = "build/image-out"
+    ROOTD<String> = OUTD + "/root"
+    IMG<String> = OUTD + "/vybos-root.img"
+    storeDir<String> = "store"
+    name<String> = "vybos-root"
+    ver<String> = "0.1"
+
+    // 1. compose the system + pure rootfs layout.
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(true))
+    mods.push(getty(true))
+    mods.push(vim(true))
+    mods.push(nginx(true))
+    spec<SystemSpec> = compose(blank_system("x86_64-linux", "rootfs-image"), mods)
+    fails = fails + check(compose_issue(spec) == "", "composed spec is clean (gate pass)")
+    files<Vec<FileEntry>> = rootfs_files(spec)
+    n<Int> = files.len()
+    fails = fails + check(n >= 3, "rootfs_files yields the config layout")
+
+    // 2. fresh staging + write every rootfs file into the root tree.
+    if (run("rm -rf \"" + OUTD + "\" && mkdir -p \"" + ROOTD + "\"") != 0) {
+        println("  FAIL fresh staging dir"); return 1
+    }
+    staged<Int> = 0
+    if (n > 0) {
+        for (i in 0..n-1) {
+            if (stage_file(ROOTD, files.get(i))) { staged = staged + 1 }
+        }
+    }
+    fails = fails + check(staged == n, "all rootfs files staged (" + staged.to_string() + "/" + n.to_string() + ")")
+
+    // 3. seed busybox + relatink applets + +x /init + build the ext4 image + hash.
+    //    (relink logic lives in relink.py so no heredoc-inside-shell-quoting.)
+    if (!write_flat(OUTD + "/relink.py",
+        "import os,sys\n" +
+        "d=sys.argv[1]\n" +
+        "for n0 in os.listdir(d):\n" +
+        "    p=os.path.join(d,n0)\n" +
+        "    if os.path.islink(p) and n0!=\"busybox\": os.unlink(p); os.symlink(\"busybox\",p)\n")) {
+        println("  FAIL write relink.py"); return 1
+    }
+    recipe<String> = "D=\"" + ROOTD + "\" && mkdir -p \"$D/bin\" && " +
+        "cp /usr/bin/busybox \"$D/bin/busybox\" && chmod +x \"$D/bin/busybox\" && " +
+        "\"$D/bin/busybox\" --install -s \"$D/bin\" >/dev/null 2>&1; " +
+        "python3 \"" + OUTD + "/relink.py\" \"$D/bin\" && " +
+        "chmod +x \"$D/init\" && " +
+        "rm -f \"" + IMG + "\" && " +
+        "mke2fs -q -d \"$D\" -F -t ext4 -b 4096 -L vybos-root \"" + IMG + "\" 16384 && " +
+        "sha256sum \"" + IMG + "\" > \"" + OUTD + "/sha.txt\""
+    fails = fails + check(run(recipe) == 0, "seed busybox + mke2fs -d ext4 image + sha256")
+
+    // image readable + plausible size.
+    imgBytes<Int> = read_flat(IMG).len()
+    fails = fails + check(imgBytes > 20000000, "image on disk is a real disk image (" + imgBytes.to_string() + " bytes)")
+
+    // 4. content address = 64-char hex digest of the real image bytes (host-computed).
+    shaTxt<String> = read_flat(OUTD + "/sha.txt")
+    ca<String> = ""
+    if (shaTxt.len() >= 64) { ca = shaTxt.substring(0, 64) }
+    fails = fails + check(ca.len() == 64, "image content hash is a 64-hex CA (got \"" + ca + "\")")
+
+    // 5. nested store entry: store/<ca>/vybos-0.1-root.img
+    ent<String> = storeDir + "/" + ca
+    if (run("rm -rf \"" + ent + "\" && mkdir -p \"" + ent + "\" && cp \"" + IMG + "\" \"" + ent + "/vybos-" + ver + "-root.img\"") == 0) {
+        fails = fails + check(read_flat(ent + "/vybos-" + ver + "-root.img").len() > 20000000, "image staged into nested store entry")
+    } else {
+        fails = fails + check(false, "stage image into nested store entry")
+    }
+
+    // reproducibility: the stored bytes hash to the same CA.
+    if (run("sha256sum \"" + ent + "/vybos-" + ver + "-root.img\" > \"" + OUTD + "/sha2.txt\"") == 0) {
+        sha2<String> = read_flat(OUTD + "/sha2.txt")
+        rep<Bool> = (sha2.len() >= 64 && sha2.substring(0, 64) == ca)
+        fails = fails + check(rep, "stored image is content-addressed reproducibly (resolution == CA)")
+    } else {
+        fails = fails + check(false, "re-hash the stored image")
+    }
+
+    // 6. metadata.
+    meta<String> = "{\"name\": \"" + name + "\", \"version\": \"" + ver + "\", \"kind\": \"root-disk-image\"," +
+        "\"format\": \"raw ext4\", \"sizeBytes\": " + imgBytes.to_string() + ", \"contentHash\": \"" + ca + "\"," +
+        "\"output\": \"" + ent + "/vybos-" + ver + "-root.img\"," +
+        "\"boot\": \"tools/vybos-run --runtime qemu --kernel <derived-bzImage> --disk " + ent + "/vybos-" + ver + "-root.img --test\"}"
+    mPath<String> = ent + "/vybos-" + ver + "-root.meta.json"
+    fails = fails + check(write_flat(mPath, meta), "image metadata written (" + mPath + ")")
+
+    println("  image  : " + ent + "/vybos-" + ver + "-root.img")
+    println("  CA     : " + ca)
+    println("  boot   : tools/vybos-run --runtime qemu --kernel <bzImage> --disk " + ent + "/vybos-" + ver + "-root.img --test")
+    println("")
+    sum<String> = "ALL B5 ROOT-IMAGE INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

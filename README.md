@@ -145,6 +145,11 @@ $VYB build/build-package.vyb $COMMON
 $ROOT/tools/vybos-run --test                     # container-rootfs boot to READY (bwrap/docker)
 $ROOT/tools/vybos-run --runtime qemu --test      # REAL QEMU kernel+initramfs self-boot (fetches a kernel)
 
+# B5 — persistent root/disk image: compose -> rootfs -> raw ext4 -> nested store
+$VYB build/build-image.vyb $COMMON               # -> store/<ca>/vybos-0.1-root.img + .meta.json
+# ... boot it as a REAL mounted root under the DERIVED kernel (state persists):
+$ROOT/tools/vybos-run --runtime qemu --disk store/<ca>/vybos-0.1-root.img --test
+
 # Build-stage derivations (fetch source -> build -> content-address OUTPUT)
 $VYB build/build-derive.vyb        $COMMON       # hello-vyb determinism spike
 $VYB build/build-derive-real.vyb   $COMMON       # busybox 1.36.1 from real source
@@ -187,7 +192,7 @@ markers are `REPROBUILD:BINUTILS:PASS` / `REPROBUILD:GCC:PASS`.)
 - [x] Derived hypervisor (QEMU-from-source) packaged into a nested store entry — full roll-your-own boot.
 - [x] Path-independent byte-deterministic kernel (built twice, byte-identical).
 - [x] Independent-build reproducibility proofs (binutils + gcc tower).
-- [ ] Remaining toward a full bootable image: root/disk image (B5), bootloader, gen-switch, and VybOS's own (non-stand-in) userspace.
+- [~] Full bootable image: **persistent root/disk image (B5) LANDED** — `build/build-image.vyb` → nested `store/<ca>/vybos-0.1-root.img` → `tools/vybos-run --runtime qemu --disk … --test` boots it as a **real mounted root** (derived kernel) to READY. Remaining: bootloader, atomic gen-switch (needs the `rename`/`symlink` RFE), VybOS's own userspace.
 - [ ] Generations wiring: tie `spec_digest` + `plan_lines` into a generation switch (needs the `rename`/`symlink` RFE for the atomic profile flip).
 - [ ] Module-system deepening: service options (port, args) beyond `enabled`.
 

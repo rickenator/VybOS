@@ -128,15 +128,27 @@ this is the boot-target the rest of this roadmap and issue #1 build toward.
   this host). The earlier fetched Alpine `vmlinuz` stop-gap is **replaced** by
   the derived kernel. `/init` must be `+x` for kernel execve; the expectable
   "Attempted to kill init" panic after READY is the natural stop.
-- **Remaining:** a real persistent image (root disk / gen-switch), bootloader,
-  and VybOS's own userspace (not stand-in BusyBox).
+- **Remaining:** bootloader, gen-switch, and VybOS's own userspace (not
+  stand-in BusyBox). (A persistent disk image now exists — see B5.)
 
-### B5 — Image format + atomic generation switch
-- Pack the built rootfs into a bootable artifact: raw/`qcow2` disk or ISO; a
-  generation switch on boot (`/run/current-system`-style). The atomic
-  profile/symlink flip needs the **`rename`/`symlink` stdlib RFE**.
-- This is where `tools/vybos-run` boots a *real* VybOS image (closes issue #1
-  acceptance criteria 1, 2, 3, 5, 6, 10, 11).
+### B5 — Persistent root/disk image + atomic generation switch
+- ✅ **PERSISTENT ROOT IMAGE LANDED (2026-08-28)** — `build/build-image.vyb`
+  composes the spec → stages the rootfs → seeds busybox → `mke2fs -d` a **raw
+  ext4** root image (64M), content-addressed (host `sha256sum` of the real
+  bytes; a 60MB image is too large to hold as one Vyb String) into the **nested
+  store**: `store/<ca>/vybos-0.1-root.img` + `.meta.json`.
+- ✅ **Boots as a REAL mounted root (not initramfs)** — the **derived kernel**
+  (`CONFIG_EXT4_FS=y` + `VIRTIO_BLK=y` built-in) mounts it as `/dev/vda`
+  (`root=/dev/vda rw init=/init`) and reaches `VYBOS_READY`; state persists
+  across boots. `tools/vybos-run --runtime qemu --disk store/<ca>/… --test`
+  wires it (auto-finds the derived kernel). NOTE: the fetched Alpine `vmlinuz`
+  CANNOT mount a disk root (its ext4/virtio are modules we don't ship) — the
+  derived kernel is required, which is also the dogfood-correct choice.
+- **Remaining (atomic gen-switch):** the `/run/current-system`-style profile
+  flip needs the **`rename`/`symlink` stdlib RFE**; the bootloader (grub/syslinux
+  are explicit non-goals — boot stays `-kernel` driven); VybOS's own userspace.
+- This is where issue #1 acceptance criteria 1, 2, 3, 5, 6, 10, 11 close once
+  the gen-switch lands.
 
 ### B6 — VybOS-specific smoke tests
 - `--test` checks against the real image: kernel booted, root mounted, init
