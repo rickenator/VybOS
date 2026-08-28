@@ -1,0 +1,132 @@
+// vybctl-anc.vyb — Vyb-native ancestor/rollback CHECKER for the vybctl CLI.
+//
+// Reads a small command file (generations/.vybctl) written by tools/vybctl:
+//   mode=check                 -> print VALID / INVALID for switching cur -> target
+//   mode=parent                -> print the PARENT digest of cur (for rollback)
+//   cur=<gen-<digest> | <digest>>
+//   target=<gen-<digest> | <digest>>
+//
+// The generation ledger (generations/index.json) rows are `id|parent|digest`
+// with BARE digest ids; `current` is a symlink generations/current -> gen-<digest>.
+// All matching is STRING-based (Vyb has no str->int): ids are compared as ASCII.
+// This keeps the switch/rollback SAFETY rule (only across the ancestor chain)
+// in vybey — the CLI only performs the atomic symlink flip after this says VALID.
+import io::{open_read, read_all, close, open_write, write_str}
+
+// strip an optional "gen-" prefix -> bare digest.
+stripgen(s<String>)<String> -> {
+    if (s.len() >= 4 && s.substring(0, 4) == "gen-") { return s.substring(4, s.len()) }
+    return s
+}
+
+// index of first '\n' at/after start, or -1.
+next_nl(s<String>, start<Int>)<Int> -> {
+    l<Int> = s.len()
+    if (start >= l) { return -1 }
+    for (i in start..l-1) { if (s.char_at(i) == 10) { return i } }
+    return -1
+}
+
+// index of first '|' at/after start, or -1.
+next_pipe(s<String>, start<Int>)<Int> -> {
+    l<Int> = s.len()
+    if (start >= l) { return -1 }
+    for (i in start..l-1) { if (s.char_at(i) == 124) { return i } }
+    return -1
+}
+
+// value of a `key=` line in text (after "key=" until newline); "" if absent.
+field(text<String>, key<String>)<String> -> {
+    kd<String> = key + "="
+    kl<Int> = kd.len()
+    i<Int> = 0
+    l<Int> = text.len()
+    if (l >= kl) {
+        for (i in 0..l-kl) {
+            ok<Bool> = true
+            for (j in 0..kl-1) { if (text.char_at(i + j) != kd.char_at(j)) { ok = false; break } }
+            if (ok) {
+                st<Int> = i + kl
+                en<Int> = next_nl(text, st)
+                if (en < 0) { en = l }
+                return text.substring(st, en)
+            }
+        }
+    }
+    return ""
+}
+
+// parent of an id in the ledger (string lookup); "" if not found.
+ledger_parent(ledger<String>, idBare<String>)<String> -> {
+    l<Int> = ledger.len()
+    start<Int> = next_nl(ledger, 0) + 1   // skip the cur= header line
+    while (start < l) {
+        eol<Int> = next_nl(ledger, start)
+        end<Int> = l
+        if (eol >= 0) { end = eol }
+        line<String> = ledger.substring(start, end)
+        p1<Int> = next_pipe(line, 0)
+        p2<Int> = -1
+        if (p1 >= 0) { p2 = next_pipe(line, p1 + 1) }
+        if (p1 >= 0 && p2 >= 0) {
+            rid<String> = line.substring(0, p1)
+            rpar<String> = line.substring(p1 + 1, p2)
+            if (rid == idBare) { return rpar }
+        }
+        start = end + 1
+    }
+    return ""
+}
+
+// is (bare) target on the ancestor chain of (bare) cur? (gen-0/the void is invalid)
+is_ancestor_str(ledger<String>, curBare<String>, targetBare<String>)<Bool> -> {
+    if (targetBare == "" || targetBare == "0") { return false }
+    if (targetBare == curBare) { return true }
+    x<String> = curBare
+    guard<Int> = 0
+    while (x != "" && x != targetBare && guard < 1000) {
+        nx<String> = ledger_parent(ledger, x)
+        if (nx == "") { return false }
+        x = nx
+        guard = guard + 1
+    }
+    return (x == targetBare)
+}
+
+read_cmd(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+main()<Int> -> {
+    gdir<String> = "generations"
+    cmd<String> = read_cmd(gdir + "/.vybctl")
+    ledger<String> = read_flat(gdir + "/index.json")
+    mode<String> = field(cmd, "mode")
+    cur<String> = stripgen(field(cmd, "cur"))
+    tgt<String> = stripgen(field(cmd, "target"))
+
+    if (mode == "parent") {
+        p<String> = ledger_parent(ledger, cur)
+        if (p == "") { println("NONE") } else { println("gen-" + p) }
+        if (p == "") { return 1 }
+        return 0
+    }
+    // check mode
+    if (is_ancestor_str(ledger, cur, tgt)) { println("VALID") } else { println("INVALID") }
+    if (is_ancestor_str(ledger, cur, tgt)) { return 0 }
+    return 1
+}

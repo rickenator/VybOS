@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# tools/vybctl — VybOS control-plane CLI (issue #2), Vyb-native safety.
+#
+# Administers the generation store (generations/) that build/build-ctl.vyb
+# creates (and build/build-gensys.vyb mirrors on a booted root):
+#   generations/current -> gen-<digest>   ATOMIC pointer (switch/rollback = flip)
+#   generations/index.json                ledger: cur=<id> + id|parent|digest rows
+#   generations/gen-<digest>/config.json  committed SystemSpec per generation
+#
+# subcommands:
+#   status                     show current generation + the ledger
+#   switch <gen>               flip `current` to <gen> ONLY if build/vybctl-anc.vyb
+#                              says it is on the ancestor chain (VALID)
+#   rollback                   flip `current` to the parent of the current gen
+#   plan                       run the full commit/status/switch/rollback/plan slice
+#
+# The switch/rollback SAFETY rule (ancestor gating) lives in a Vyb-native checker
+# (build/vybctl-anc.vyb, string-based — Vyb has no str->int). This shell only does
+# IO + the atomic `ln -sfn` symlink flip after the checker says VALID. Once the
+# rename/symlink stdlib RFE lands, the flip itself moves into vybey too.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+GDIR="$ROOT/generations"
+VYB="${VYB:-$HOME/Projects/Vyb-vybos/build/vyb}"
+VYB_STDLIB="${VYB_STDLIB:-$HOME/Projects/Vyb-vybos/stdlib}"
+ANC="build/vybctl-anc.vyb"
+
+bare() { case "$1" in gen-*) echo "${1#gen-}" ;; *) echo "$1" ;; esac; }
+
+require_store() {
+  [ -f "$GDIR/index.json" ] || { echo "error: no generation store at $GDIR — run build/build-ctl.vyb (or build-gensys.vyb) first" >&2; exit 1; }
+}
+
+# run the Vyb-native checker; prints its decision line.
+anc() {
+  printf 'mode=%s\ncur=%s\ntarget=%s\n' "$1" "$2" "$3" > "$GDIR/.vybctl"
+  ( cd "$ROOT" && VYB_STDLIB="$VYB_STDLIB" "$VYB" "$ANC" --module-path modules 2>/dev/null )
+  rm -f "$GDIR/.vybctl"
+}
+
+flip() { ln -sfn "gen-$(bare "$1")" "$GDIR/current"; }
+
+cmd_status() {
+  require_store
+  echo "current -> $(readlink "$GDIR/current" 2>/dev/null)"
+  echo "-- ledger (index.json) --"
+  cat "$GDIR/index.json"
+}
+
+cmd_switch() {
+  require_store
+  local target="${1:-}"
+  [ -n "$target" ] || { echo "usage: vybctl switch <gen-<digest> | <digest>>" >&2; exit 2; }
+  local cur; cur="$(readlink "$GDIR/current" 2>/dev/null)"
+  local dec; dec="$(anc check "$cur" "$target")"
+  if [ "$dec" = "VALID" ]; then
+    flip "$target"; echo "switched: $(readlink "$GDIR/current")"
+  else
+    echo "rejected: '$target' is not on the ancestor chain of $(readlink "$GDIR/current")" >&2; exit 1
+  fi
+}
+
+cmd_rollback() {
+  require_store
+  local cur; cur="$(readlink "$GDIR/current" 2>/dev/null)"
+  local parent; parent="$(anc parent "$cur" "")"
+  if [ "$parent" = "NONE" ] || [ -z "$parent" ]; then
+    echo "rejected: current generation has no parent to roll back to" >&2; exit 1
+  fi
+  flip "$parent"; echo "rolled back: $(readlink "$GDIR/current")"
+}
+
+case "${1:-}" in
+  status)   cmd_status ;;
+  switch)   cmd_switch "${2:-}" ;;
+  rollback) cmd_rollback ;;
+  plan)     ( cd "$ROOT" && VYB_STDLIB="$VYB_STDLIB" "$VYB" build/build-ctl.vyb --module-path modules ) ;;
+  *) echo "usage: vybctl {status|switch <gen>|rollback|plan}" >&2; exit 2 ;;
+esac
