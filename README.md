@@ -160,6 +160,9 @@ $ROOT/tools/vybctl status                        # CLI admin: current gen + ledg
 $ROOT/tools/vybctl rollback                      # atomic flip to the parent generation (ancestor-gated)
 $ROOT/tools/vybctl switch gen-<digest>           # switch ONLY across the ancestor chain (Vyb-native gate)
 
+# vyb-config (issue #2) — typed config schema + /etc/vybos.md parser + validate + diff:
+$VYB build/build-vybconfig.vyb $COMMON           # parse/validate/serialize/diff a VybConfig
+
 # Build-stage derivations (fetch source -> build -> content-address OUTPUT)
 $VYB build/build-derive.vyb        $COMMON       # hello-vyb determinism spike
 $VYB build/build-derive-real.vyb   $COMMON       # busybox 1.36.1 from real source
@@ -204,7 +207,7 @@ markers are `REPROBUILD:BINUTILS:PASS` / `REPROBUILD:GCC:PASS`.)
 - [x] Independent-build reproducibility proofs (binutils + gcc tower).
 - [~] Full bootable image: **persistent root/disk image (B5) + generation switch LANDED** — `build/build-image.vyb` → nested `store/<ca>/vybos-0.1-root.img`; `build/build-gensys.vyb` + `modules/gensys.vyb` put N immutable generations on the root with a `current` pointer (`/etc/vyb-os` follows it), init prints `ACTIVE_GENERATION` + READY; `tools/vybos-run --runtime qemu --disk … --test` boots as a real mounted root (derived kernel). Remaining: bootloader, VybOS's own userspace, and an atomic `vyb system switch` command (once the `rename`/`symlink` RFE lands).
 - [ ] Module-system deepening: service options (port, args) beyond `enabled`.
-- [~] Control plane (issue #2) foundation: `build/build-ctl.vyb` (generation mgmt + rollback + plan, Vyb-native, ancestor-gated). **CLI landed**: `tools/vybctl` (`status`/`switch`/`rollback`/`plan`) — switch/rollback safety enforced by Vyb-native `build/vybctl-anc.vyb` (string-based ledger matching, no str->int); only it flips the atomic `current` pointer. Follow-ons: `vyb-config` (typed schema + `/etc/vybos.md` parser), `vyb-init`, `vyb-system`, curses/MCP frontends.
+- [~] Control plane (issue #2) — **generation mgmt (build-ctl.vyb)**, **`vybctl` CLI** (status/switch/rollback/plan, Vyb-native ancestor gate), **`vyb-config`** (`modules/vybconfig.vyb`: typed `VybConfig` schema + `/etc/vybos.md` parser + validate + canonical serialize + a→b diff — the ONE config model every frontend uses). Follow-ons: plumb vyb-config into `vyb-init`/`vyb-system`, curses + MCP frontends.
 
 ## Notes
 

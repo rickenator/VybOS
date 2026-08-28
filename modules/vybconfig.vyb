@@ -1,0 +1,286 @@
+// vybconfig.vyb — VybOS typed system-config model + /etc/vybos.md parser (issue #2).
+//
+// The ONE typed configuration model that every front end (CLI, TUI, vyb-system,
+// AI/MCP) operates against — per the issue's architectural rule: markdown, CLI,
+// curses, APIs are INTERFACES to this model. This slice provides:
+//   VybConfig           the typed schema (hostname, packages, services+options)
+//   parse_md(md)        parse /etc/vybos.md (a small Markdown DSL) -> VybConfig
+//   validate(cfg)       "" if OK, else a validation message
+//   to_md(cfg)          canonical serialization (Markdown)
+//   diff_lines(a, b)    a -> b transactional diff (hostname/pkg/service deltas)
+//
+// DSL (tolerant whitespace; sections under "## "):
+//   # vybos
+//   hostname = hera
+//   ## packages
+//   - gzip 1.3
+//   - vim 9.1
+//   ## services
+//   - sshd enabled authkeys=/root/.ssh/authorized_keys
+//   - getty enabled on=ttyS0
+//   - nginx disabled
+import collections
+
+share(all)
+struct ServiceOpt { name<String>, enabled<Bool>, opts<String> }
+share(all)
+struct PkgReq { name<String>, version<String> }
+share(all)
+struct VybConfig { hostname<String>, version<String>, services<Vec<ServiceOpt>>, pkgs<Vec<PkgReq>> }
+
+share(all)
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+// index of first occurrence of `nd` in `h` at/after `from`, or -1.
+share(all)
+find_sub(h<String>, nd<String>, off<Int>)<Int> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return -1 }
+    for (i in off..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) { if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break } }
+        if (ok) { return i }
+    }
+    return -1
+}
+
+// index of first newline at/after from, or -1.
+share(all)
+find_nl(s<String>, off<Int>)<Int> -> {
+    l<Int> = s.len()
+    for (i in off..l-1) { if (s.char_at(i) == 10) { return i } }
+    return -1
+}
+
+// index of first space at/after from, or -1.
+share(all)
+find_space(s<String>, off<Int>)<Int> -> {
+    l<Int> = s.len()
+    for (i in off..l-1) { if (s.char_at(i) == 32) { return i } }
+    return -1
+}
+
+// index of first non-space at/after from, or -1.
+share(all)
+find_nonspace(s<String>, off<Int>)<Int> -> {
+    l<Int> = s.len()
+    for (i in off..l-1) { if (s.char_at(i) != 32 && s.char_at(i) != 9) { return i } }
+    return -1
+}
+
+share(all)
+trim(s<String>)<String> -> {
+    l<Int> = s.len()
+    i<Int> = 0
+    while (i < l && (s.char_at(i) == 32 || s.char_at(i) == 9)) { i = i + 1 }
+    j<Int> = l
+    while (j > i && (s.char_at(j - 1) == 32 || s.char_at(j - 1) == 9)) { j = j - 1 }
+    return s.substring(i, j)
+}
+
+// word at `from` (skipping spaces); "" if none.
+share(all)
+tok_at(s<String>, off<Int>)<String> -> {
+    st<Int> = find_nonspace(s, off)
+    if (st < 0) { return "" }
+    en<Int> = find_space(s, st)
+    if (en < 0) { en = s.len() }
+    return s.substring(st, en)
+}
+
+// start index of the word that FOLLOWS the word at `from`; -1 if none.
+share(all)
+after_tok(s<String>, off<Int>)<Int> -> {
+    st<Int> = find_nonspace(s, off)
+    if (st < 0) { return -1 }
+    en<Int> = find_space(s, st)
+    if (en < 0) { return -1 }
+    return find_nonspace(s, en)
+}
+
+// ---- Parsing ----
+share(all)
+parse_md(md<String>)<VybConfig> -> {
+    cfg<VybConfig> = VybConfig { hostname = "", version = "0.1", services = Vec(), pkgs = Vec() }
+    section<String> = ""
+    l<Int> = md.len()
+    start<Int> = 0
+    while (start < l) {
+        nl<Int> = find_nl(md, start)
+        end<Int> = l
+        if (nl >= 0) { end = nl }
+        t<String> = trim(md.substring(start, end))
+        if (substr_has(t, "## ")) {
+            section = trim(t.substring(3, t.len()))
+        } else if (substr_has(t, "hostname")) {
+            eq<Int> = find_sub(t, "=", 0)
+            if (eq >= 0) {
+                val<String> = trim(t.substring(eq + 1, t.len()))
+                if (val.len() > 0) { cfg.hostname = val }
+            }
+        } else if (t.len() >= 2 && t.char_at(0) == 45 && t.char_at(1) == 32) {
+            // "- name ..." under a section
+            rest<String> = trim(t.substring(2, t.len()))
+            if (section == "services") {
+                nm<String> = tok_at(rest, 0)
+                ath<Int> = after_tok(rest, 0)
+                en<Bool> = true
+                opts<String> = ""
+                if (ath >= 0) {
+                    w<String> = tok_at(rest, ath)
+                    if (w == "disabled") {
+                        en = false
+                        oa<Int> = after_tok(rest, ath)
+                        if (oa >= 0) { opts = trim(rest.substring(oa, rest.len())) }
+                    } else {
+                        oa<Int> = after_tok(rest, ath)
+                        if (oa >= 0) { opts = trim(rest.substring(oa, rest.len())) }
+                    }
+                }
+                cfg.services.push(ServiceOpt { name = nm, enabled = en, opts = opts })
+            } else if (section == "packages") {
+                nm<String> = tok_at(rest, 0)
+                vt<Int> = after_tok(rest, 0)
+                ver<String> = ""
+                if (vt >= 0) { ver = tok_at(rest, vt) }
+                cfg.pkgs.push(PkgReq { name = nm, version = ver })
+            }
+        }
+        if (nl < 0) { break }
+        start = nl + 1
+    }
+    return cfg
+}
+
+// ---- Validation ----
+share(all)
+validate(cfg<VybConfig>)<String> -> {
+    if (cfg.hostname.len() == 0) { return "validation: hostname is required" }
+    n<Int> = cfg.services.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            s<ServiceOpt> = cfg.services.get(i)
+            if (s.name.len() == 0) { return "validation: an unnamed service is declared" }
+        }
+    }
+    m<Int> = cfg.pkgs.len()
+    if (m > 0) {
+        for (i in 0..m-1) {
+            p<PkgReq> = cfg.pkgs.get(i)
+            if (p.name.len() == 0 || p.version.len() == 0) { return "validation: a package missing name/version" }
+        }
+    }
+    return ""
+}
+
+// ---- Serialization (canonical Markdown) ----
+share(all)
+to_md(cfg<VybConfig>)<String> -> {
+    s<String> = "# vybos\nhostname = " + cfg.hostname + "\n\n## packages\n"
+    m<Int> = cfg.pkgs.len()
+    if (m > 0) { for (i in 0..m-1) { p<PkgReq> = cfg.pkgs.get(i); s = s + "- " + p.name + " " + p.version + "\n" } }
+    s = s + "\n## services\n"
+    n<Int> = cfg.services.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            sv<ServiceOpt> = cfg.services.get(i)
+            s = s + "- " + sv.name + " "
+            if (sv.enabled) { s = s + "enabled" } else { s = s + "disabled" }
+            if (sv.opts.len() > 0) { s = s + " " + sv.opts }
+            s = s + "\n"
+        }
+    }
+    return s
+}
+
+// find a named service in cfg; returns the (possibly empty-named) match.
+share(all)
+find_service(c<VybConfig>, name<String>)<ServiceOpt> -> {
+    n<Int> = c.services.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            s<ServiceOpt> = c.services.get(i)
+            if (s.name == name) { return s }
+        }
+    }
+    return ServiceOpt { name = "", enabled = false, opts = "" }
+}
+
+share(all)
+find_pkg(c<VybConfig>, name<String>)<PkgReq> -> {
+    n<Int> = c.pkgs.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            p<PkgReq> = c.pkgs.get(i)
+            if (p.name == name) { return p }
+        }
+    }
+    return PkgReq { name = "", version = "" }
+}
+
+// ---- Diff (a -> b) ----
+share(all)
+diff_lines(a<VybConfig>, b<VybConfig>)<String> -> {
+    out<String> = ""
+    if (a.hostname != b.hostname) { out = out + "hostname: " + a.hostname + " -> " + b.hostname + "\n" }
+    // services
+    n<Int> = a.services.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            s<ServiceOpt> = a.services.get(i)
+            bs<ServiceOpt> = find_service(b, s.name)
+            if (bs.name == "") { out = out + "service -" + s.name + "\n" }
+            else if (bs.enabled != s.enabled) {
+                out = out + "service ~" + s.name + "\n"
+            }
+        }
+    }
+    m<Int> = b.services.len()
+    if (m > 0) {
+        for (i in 0..m-1) {
+            s<ServiceOpt> = b.services.get(i)
+            if (find_service(a, s.name).name == "") { out = out + "service +" + s.name + "\n" }
+        }
+    }
+    // packages
+    pa<Int> = a.pkgs.len()
+    if (pa > 0) {
+        for (i in 0..pa-1) {
+            p<PkgReq> = a.pkgs.get(i)
+            bp<PkgReq> = find_pkg(b, p.name)
+            if (bp.name == "") { out = out + "package -" + p.name + "\n" }
+            else if (bp.version != p.version) { out = out + "package ~" + p.name + " " + p.version + "->" + bp.version + "\n" }
+        }
+    }
+    pb<Int> = b.pkgs.len()
+    if (pb > 0) {
+        for (i in 0..pb-1) {
+            p<PkgReq> = b.pkgs.get(i)
+            if (find_pkg(a, p.name).name == "") { out = out + "package +" + p.name + " " + p.version + "\n" }
+        }
+    }
+    if (out.len() == 0) { out = "(no changes)\n" }
+    return out
+}
+
+// Bool -> "1"/"0".
+share(all)
+b01(x<Bool>)<String> -> {
+    if (x) { return "1" }
+    return "0"
+}
+
+

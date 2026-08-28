@@ -165,4 +165,6 @@ Confirmed language facts (parse/semantic, independent of bounds):
   ("could not determine type"); used inside a `print(...)` concat it is fine.
 - **`package` is reserved** (VybOS has no `package` keyword).
 
-
+## Identifiers & expressions (verified 2026-08-28)
+- `from` and `bare` are RESERVED words in Vyb — never use them as function or parameter names (`Expected parameter declaration` / `is a reserved word`).
+- C-style ternary `cond ? a : b` is NOT supported (`Expected RPAREN but found QUESTION_MARK`) — use a small `Bool -> String` helper instead.
