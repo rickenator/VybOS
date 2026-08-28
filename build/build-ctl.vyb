@@ -1,0 +1,183 @@
+// build-ctl.vyb — VybOS control-plane slice #1 (issue #2): generation
+// management + rollback + plan, Vyb-native ("vybctl" foundation).
+//
+// SCOPE (vybctl's generation/rollback/config-diff surface, dogfooding vybey):
+//   commit   a desired SystemSpec as an immutable generation (gen-<digest>)
+//   status   the generation chart (rows + chain + which gen `current` points at)
+//   switch   to a target generation — VALID only across the ancestor chain
+//            (is_ancestor), flip `current` atomically (ln -sfn; the
+//            rename/symlink stdlib RFE is the pure-Vyb follow-on)
+//   rollback switch to an ancestor (the parent)
+//   plan     plan_lines(cur, des) = the transactional install/keep/remove diff
+//
+// The generation store mirrors the BOOTED aggregate root layout (gensys.vyb):
+//   generations/gen-<digest>/config.json      the committed SystemSpec
+//   generations/index.json                    ledger: cur=<id> + id|parent|digest rows
+//   generations/current -> gen-<digest>       ATOMIC pointer (switch/rollback = flip)
+//
+// This is the first piece of issue #2; vyb-init / vyb-system / curses / MCP are
+// follow-on slices against the same model. Pure + framework-side; the ONLY host
+// call is the atomic symlink flip (ln -sfn) — the piece awaiting the RFC/rename RFE.
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import compose::{Module, blank_system, compose, compose_issue}
+import plan::{SystemSpec, Pkg, Dep, spec_digest, plan_lines}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+// naive substring test.
+substr_has(h<String>, nd<String>)<Bool> -> {
+    hl<Int> = h.len()
+    nl<Int> = nd.len()
+    if (nl > hl) { return false }
+    for (i in 0..hl-nl) {
+        ok<Bool> = true
+        for (j in 0..nl-1) {
+            if (h.char_at(i + j) != nd.char_at(j)) { ok = false; break }
+        }
+        if (ok) { return true }
+    }
+    return false
+}
+
+struct GenRow { id<Int>, parent<Int>, digest<Int> }
+
+// index.json ledger text: line 1 `cur=<id>`, then `id|parent|digest` per row.
+index_text(cur<Int>, rows<Vec<GenRow>>)<String> -> {
+    s<String> = "cur=" + cur.to_string() + "\n"
+    n<Int> = rows.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            e<GenRow> = rows.get(i)
+            s = s + e.id.to_string() + "|" + e.parent.to_string() + "|" + e.digest.to_string() + "\n"
+        }
+    }
+    return s
+}
+
+// true iff `target` is on the ancestor chain of `cur` (or == cur): a valid
+// switch/rollback destination. Generation 0 is the void (never valid).
+is_ancestor(rows<Vec<GenRow>>, cur<Int>, target<Int>)<Bool> -> {
+    if (target == 0) { return false }
+    if (target == cur) { return true }
+    x<Int> = cur
+    n<Int> = rows.len()
+    guard<Int> = 0
+    while (x != 0 && x != target && guard < 1000) {
+        found<Bool> = false
+        if (n > 0) {
+            for (i in 0..n-1) {
+                if (rows.get(i).id == x) { x = rows.get(i).parent; found = true; break }
+            }
+        }
+        if (!found) { return false }
+        guard = guard + 1
+    }
+    return (x == target)
+}
+
+// dependency-free package so desired states differ in their package CLOSURE
+// (which is what spec_digest folds; hostname/services are not part of it).
+makedep(ver<String>)<Pkg> -> {
+    return Pkg { name = "ctl-pkg", version = ver, source = "", deps = Vec(), storePath = "" }
+}
+
+// commit one generation: write its spec to the store + return the ledger row.
+commit_row(gdir<String>, gid<Int>, parent<Int>, spec<SystemSpec>)<GenRow> -> {
+    d<String> = gdir + "/gen-" + gid.to_string()
+    run("mkdir -p \"" + d + "\"")
+    write_flat(d + "/config.json", spec.to_string())
+    return GenRow { id = gid, parent = parent, digest = spec_digest(spec) }
+}
+
+// flip the generation store's `current` pointer (atomic) to gen-<id>.
+flip_current(gdir<String>, id<Int>)<Bool> -> {
+    return (run("ln -sfn \"gen-" + id.to_string() + "\" \"" + gdir + "/current\"") == 0)
+}
+
+main()<Int> -> {
+    println("=== VybOS control plane (issue #2): generation mgmt + rollback + plan ===\n")
+    fails<Int> = 0
+    gdir<String> = "generations"
+
+    // two desired system states: A = empty root closure; B = introduces ctl-pkg
+    // (differs in the package CLOSURE, which is what spec_digest folds)
+    mods<Vec<Module>> = Vec()
+    sA<SystemSpec> = compose(blank_system("x86_64-linux", "ctl-a"), mods)
+    sB<SystemSpec> = compose(blank_system("x86_64-linux", "ctl-b"), mods)
+    sB.pkgs.push(makedep("1.0"))
+    fails = fails + check(compose_issue(sA) == "" && compose_issue(sB) == "", "both desired states pass the compose gate")
+
+    // 1. INIT store + COMMIT gen-A (root) then gen-B (parent=A).
+    if (run("rm -rf \"" + gdir + "\" && mkdir -p \"" + gdir + "\"") != 0) { println("  FAIL init store"); return 1 }
+    rows<Vec<GenRow>> = Vec()
+    gA<Int> = spec_digest(sA)
+    gB<Int> = spec_digest(sB)
+    rows.push(commit_row(gdir, gA, 0, sA))
+    rows.push(commit_row(gdir, gB, gA, sB))
+    fails = fails + check(read_flat(gdir + "/gen-" + gA.to_string() + "/config.json").len() > 0, "commit gen-A (root) persisted")
+    fails = fails + check(read_flat(gdir + "/gen-" + gB.to_string() + "/config.json").len() > 0, "commit gen-B (child of A) persisted")
+
+    // 2. STATUS: current -> gen-B, chain A <- B.
+    fails = fails + check(flip_current(gdir, gB), "status: current -> gen-B (atomic ln -sfn)")
+    fails = fails + check(write_flat(gdir + "/index.json", index_text(gA, rows)), "ledger (index.json) written")
+    fails = fails + check(rows.get(0).parent == 0, "gen-A is the root generation")
+    fails = fails + check(rows.get(1).parent == gA, "gen-B's parent is gen-A (chain)")
+    fails = fails + check(rows.get(1).digest != rows.get(0).digest, "distinct spec digests (different state -> different gen)")
+
+    // 3. ROLLBACK: switch to ancestor gen-A is VALID -> flip current.
+    fails = fails + check(is_ancestor(rows, gB, gA), "rollback gen-B -> gen-A valid (ancestor)")
+    fails = fails + check(flip_current(gdir, gA), "rollback: flip current -> gen-A")
+    fails = fails + check(write_flat(gdir + "/index.json", index_text(gA, rows)), "rollback: ledger current -> gen-A")
+    fails = fails + check(is_ancestor(rows, gA, gA), "re-apply current is a no-op")
+    // invalid switches rejected: to a descendant or to the void.
+    fails = fails + check(!is_ancestor(rows, gA, gB), "switch to a DESCENDANT is rejected")
+    fails = fails + check(!is_ancestor(rows, gA, 0), "switch to the void (gen 0) is rejected")
+
+    // 4. PLAN (transactional diff) between two desired states.
+    p<String> = plan_lines(sA, sB)
+    fails = fails + check(p.len() > 0, "plan(cur=A, des=B) is non-empty (introduces ctl-pkg)")
+    fails = fails + check(substr_has(p, "install"), "plan shows install of the new pkg")
+
+    // 5. persistence verify: ledger re-read + current pointer via host readlink.
+    idx<String> = read_flat(gdir + "/index.json")
+    fails = fails + check(substr_has(idx, "cur=" + gA.to_string()), "ledger current persists (cur=gen-A after rollback)")
+    fails = fails + check(run("readlink \"" + gdir + "/current\" | grep -q \"gen-" + gA.to_string() + "\"") == 0, "current pointer = gen-A after rollback (readlink)")
+
+    println("\n  store : " + gdir + "/")
+    println("  chart : gen-A(root) <- gen-B(child)")
+    println("  ledger: \n" + read_flat(gdir + "/index.json"))
+    println("  plan(A->B):\n" + p)
+    sum<String> = "ALL CONTROL-PLANE (GENERATION+ROLLBACK) INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
