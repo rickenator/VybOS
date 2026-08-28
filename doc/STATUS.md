@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-25 (full 256-bit hex + NESTED store (flat cleared); BYTE-DETERMINISTIC kernel; all derived from source)
+> last_updated: 2026-08-26 (deepest: INDEPENDENT-BUILD REPROBUILD proofs for binutils + the gcc tower; BYTE-DETERMINISTIC kernel; full 256-bit hex NESTED store (flat cleared); all derived from source)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -25,8 +25,8 @@ cd $VYBU && cmake --build build
   `vyb-os-stable` to `origin/main` + rebuilds `build/vyb` only when new
   commits have been pushed; refuses on divergence; no-op when the remote is
   unreachable (stable stays). `./build/sync-os-toolchain.sh`.
-  As of this session it is at `5656c62` = origin/main, and all VybOS slices
-  PASS on the rebuilt binary.
+  Policy tracks **main (pushed-state bound)**, not a hard pin — run the sync
+ script to refresh to Vyb's latest committed+pushed main.
 - Decision that was OPEN is now resolved: **track main (pushed-state bound)**,
   not a hard pin.
 
@@ -42,12 +42,19 @@ $ROOT/tools/vybos-run --test      # container-rootfs boot to READY (bwrap/docker
 $ROOT/tools/vybos-run --runtime qemu --test  # REAL QEMU kernel+initramfs boot to READY (fetches kernel)
 ```
 
-## 2. Current state (all committed, pushed, 7/7 PASS)
+## 2. Current state (all committed, pushed; slices PASS on the isolated toolchain)
 
-Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
-`65fe578` (real HTTPS URL realization) → `610e273` (execute/realizer core) →
-`3c94253` (apply dry-run) → `274c1e6` (RFE GitHub note) → `8204c8f`
-(module-composition convention) → `dbc9d14` (M2 URL parser + worktree isolation).
+Working tree clean, `main...origin/main` in sync. Recent commits (newest first)
+— the determinism/reprobuild landing:
+`fbe9e81` (fix gcc reprobuild: create the per-build root `$G` before cd) →
+`d685a90` (gcc independent-build reprobuild slice + document the proofs) →
+`0a485c3` (dedicated reprobuild slice proves binutils independent-build
+byte-reproducibility) → `5fb8087` (toolchain SOURCE_DATE_EPOCH determinism;
+binutils proven, gcc flagged→proven) → `1584a7e` (SDE gmp+mpfr proven) →
+`6504308` (path-independent byte-deterministic kernel) → `3ebd586` (deterministic
+kernel + nested output; flat store cleared) → `c7373dd` (package the derived QEMU
+tree into the nested store) → `498fa5f` (full 256-bit hex content addresses +
+nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
 
 **Framework now covers the full apply pipeline, all in vybey:**
 1. **Compose** — `modules/compose.vyb`: `Module`, `compose(base, mods)` fold,
@@ -153,13 +160,16 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
     byte-identical (`REPROBUILD:BINUTILS:PASS`). KEY: GNU tools bake `$prefix`
     strings into binaries, so the install location must be pinned — path-mapping
     compiles alone is insufficient. `build-reprobuild-gcc.vyb` extends the same
-    pattern to gcc (builds the whole tower twice).
+    pattern and **PROVES the whole gcc tower (gmp→mpfr→mpc→binutils→gcc) is
+    byte-identical across two independent build roots** (`REPROBUILD:GCC:PASS`).
+    Gotcha: the per-build root `$G` must be created (`mkdir -p`) BEFORE `cd` into
+    it (fbe9e81).
 21. **TOOLCHAIN SOURCE_DATE_EPOCH DETERMINISM** — the GNU-lib + ELF toolchain
     slices export `SOURCE_DATE_EPOCH` (reproducible-builds). gmp+mpfr
     (`build-derive-mpfr.vyb`) PROVEN byte-reproducible across independent
     dirs; binutils (`build-derive-binutils.vyb`) PROVEN for `ld` across clean
-    in-place rebuilds; gcc tower (`build-derive-gcc.vyb`) flagged (SDE applied,
-    full proof deferred — see skill).
+    in-place rebuilds; gcc tower — **PROVEN independent-build byte-reproducible**
+    via `build-reprobuild-gcc.vyb` (`REPROBUILD:GCC:PASS`), not merely flagged.
 20. **BYTE-DETERMINISTIC KERNEL (path-independent)** — the kernel derivation fixes
     `KBUILD_BUILD_TIMESTAMP/USER/HOST` + `SOURCE_DATE_EPOCH` + gcc
     `-frandom-seed`/`-fno-guess-branch-probability` + `-ffile-prefix-map=$B/=`, and
@@ -193,7 +203,7 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 - **#189** — `VYB_STR_REG_CAP` cannot raise the string registry above 262144
   (clamped to fixed array); multi-MB workloads abort, error message promises an
   impossible fix. Distinct from closed #162 (safety); this is the "can't enlarge".
-  STILL OPEN (aug 25); #191 largely sidesteps it for realistic sources.
+  **CLOSED 2026-08-25** — #191 largely sidestepped it for realistic sources.
 - **#190 / #191 / #192 (closed in the 2026-08-25 sync)** — impl agent fixed the
   codegen ownership-reclaim gaps (#190, #192) and the root cause that blocked us:
   #191 (archive inflate O(N²) one-byte concat → O(N) Vec-buffer; runtime string
@@ -209,11 +219,13 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
   `github.com/vim/vim/archive/refs/tags/v9.1.0.tar.gz` now fetch 200 (bytes
   match codeload). The codeload workaround in `modules/vim.vyb` still works but
   is no longer required.
-- **#195 (M2 tracking, filed 2026-08-25)** — `rickenator/Vyb#195` is the
+- **#195 (M2 tracking — CLOSED 2026-08-26)** — `rickenator/Vyb#195` was the
   single tracking issue for the **M2 build-framework primitives RFE**
   (`doc/RFE-M2.md`): Item 1 `mkdir` (P0), Item 2 SHA-256 (P0), Item 3
-  tar/gzip extract (P1), Item 4 `url` stdlib parser (P1). Body links the full
-  spec doc. Track impl-agent progress there.
+  tar/gzip extract (P1), Item 4 `url` stdlib parser (P1). Items 1–2 (mkdir,
+  SHA-256) landed in the stdlib (`fs::mkdir` + 256-bit content hash in use);
+  Items 3–4 are carried framework-side (`archive` extract + `modules/url.vyb`).
+  Closed once the tracked primitives landed.
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
@@ -249,19 +261,18 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 - [ ] **Module-system deepening**: service options (port, args) beyond
       `enabled`; `select`-validated dep kinds; possibly an `options`-style
       carrier struct per module.
-- [ ] **Build-stage derivations → kernels-from-source** (see
-      doc/PLAN-BUILD-DERIVATIONS.md): landed — hello-vyb (byte-reproducible),
-      busybox 1.36.1 (real fetched source → built ELF), a SELF-HOSTING C
-      compiler bootstrap (chibicc: GEN-1 → GEN-2 via self-recompile), and
-      toolchain T0a→T3 (gmp/mpfr/mpc libs + binutils as/ld/ar + gcc C-only — a
-      FULL bootstrapped C toolchain — and **the Linux kernel bzImage**, all
-      derived from source. The derived `linux-6.6-bzImage.bin` now REPLACES the
-      fetched QEMU vmlinuz (boots to `VYBOS_READY=1` via `tools/vybos-run
-      --runtime qemu --kernel <out> --test`) and is compiled by the derived gcc
-      — issue #4's `build.plan` has a real `linux-6.6-vyb`. Remaining follow-ons:
-      migrate the content hash to a FULL 256-bit hex store path (now that stdlib
-      SHA-256 + mkdir exist), record reprobuild flags for byte-determinism, and
-      fold the QEMU boot into the derivation.
+- [x] **Build-stage derivations → kernels-from-source + determinism** (see
+      doc/PLAN-BUILD-DERIVATIONS.md): landed in sequence — hello-vyb
+      (byte-reproducible), busybox 1.36.1 (real fetched source → built ELF), a
+      SELF-HOSTING C compiler (chibicc: GEN-1 → GEN-2 via self-recompile), and
+      toolchain T0a→T3 (gmp/mpfr/mpc + binutils as/ld/ar + gcc C-only — a FULL
+      bootstrapped C toolchain — and **the Linux kernel bzImage**), all derived
+      from source; plus a **derived QEMU hypervisor** packaged into a nested
+      store entry and **byte-determinism proofs** (path-independent kernel; binutils
+      + gcc-tower independent-build reprobuild). The content hash is now the FULL
+      256-bit SHA-256 hex nested store path (stdlib SHA-256 + mkdir landed), the
+      reprobuild flags are recorded and proven, and the QEMU boot runs purely from
+      store artifacts (toolchain → kernel → hypervisor).
 - [x] RFE-M2 impl-agent items (mkdir/SHA-256/tar/URL) mostly done or
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 
@@ -282,18 +293,19 @@ Working tree clean, `main...origin/main` in sync. Recent commits (newest first):
 - **String registry / archive perf (since 2026-08-25 sync)**:
   `inflate_gzip` is now O(N), not O(N²) one-byte concat, and the runtime bounds
   string-registry probe chains via rehash-on-churn (#191 fixed). MB-scale real
-  tarballs now inflate+extract (verified 7.8MB / 400 members). Two ceilings
-  remain (both #189, not yet fixed): the registry table is still a fixed
-  `VYB_STR_REG_CAP` array (262144) that cannot be enlarged — pieces in
-  `flat_bytes` are 64B, so a single inflated buffer near ~16MB keeps ~N/64
-  pieces live and can approach that cap; and the per-byte `String::from_byte`/
-  concat flatten floor is ~100us/byte superlinear near ~1M, so keep committed
-  real-tree demos to a few-hundred-KB sources for fast runs.
+  tarballs now inflate+extract (verified 7.8MB / 400 members). Known practical
+  ceilings (issue **#189 closed 2026-08-25**; these remain as hard limits, not
+  trackable bugs): the registry table is a fixed `VYB_STR_REG_CAP` array
+  (262144) that cannot be enlarged — pieces in `flat_bytes` are 64B, so a
+  single inflated buffer near ~16MB keeps ~N/64 pieces live and can approach
+  that cap; and the per-byte `String::from_byte`/concat flatten floor is
+  ~100us/byte superlinear near ~1M, so keep committed real-tree demos to a
+  few-hundred-KB sources for fast runs.
 
 ## 6. Sources of truth
 
 - `README.md`, `GOAL.md`, `AGENTS.md`, `doc/` (RTD: `doc/COMPOSITION.md`,
   `doc/ARCHITECTURE.md`, `doc/STORE-LAYOUT.md`, `doc/VYB-LANGUAGE-NOTES.md`,
-  `doc/RFE-M2.md`, `doc/NIXOS-BORROWINGS.md`).
+  `doc/RFE-M2.md`, `doc/POSITIONING.md`).
 - Vyb semantics: `~/Projects/Vyb-vybos` stdlib + the compiler repo's
   `docs/refman/PROGRAMMERS_GUIDE.md`.

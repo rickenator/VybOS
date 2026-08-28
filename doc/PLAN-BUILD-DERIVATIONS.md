@@ -17,8 +17,7 @@ Build-stage derivation adds:
 `realize source → run a gated build action → content-hash the OUTPUT → store .bin/.drv-style .meta.json (records sourceUrl, sourceContentHash, buildRecipe, outputContentHash)`.
 
 The store path then tracks the *actual built output bytes*, so a source or
-recipe change yields a new address — the content-addressable build model,
-mirroring Nix derivations.
+recipe change yields a new address — the content-addressable build model.
 
 ## Spike (landed 2026-08-25): `build/build-derive.vyb`
 
@@ -125,15 +124,18 @@ mirroring Nix derivations.
   `freedom`, like the mkdir fallback). A real build sandbox (e.g. bubblewrap —
   already used by `tools/vybos-run`) with no network + ro-bind toolchain is the
   follow-on for isolation/reproducibility.
-- **Not byte-reproducible yet**: the default busybox build is byte-deterministic
-  for a fixed path (`make clean && make` reproduces the SHA) but NOT across
-  rebuilds/paths without reprobuild flags (`SOURCE_DATE_EPOCH`,
-  `-frandom-seed`, `-fdebug-prefix-map`); the kernel build likewise embeds a
-  build timestamp/hostname. hello-vyb certifies the DERIVATION machinery is
-  byte-deterministic for a deterministic compile; hardening the real builds for
-  full reprobuilds is a follow-on.
+- **Reproducibility is machine-certified for the big builds now** (busybox
+  remains the exception): the **kernel** is path-independent byte-deterministic
+  (below) and both **binutils** and the **gcc tower** carry independent-build
+  reprobuild proofs (`build-reprobuild-binutils.vyb`,
+  `build-reprobuild-gcc.vyb`). hello-vyb certifies the DERIVATION machinery is
+  byte-deterministic for a deterministic compile. `SOURCE_DATE_EPOCH` +
+  `-ffile-prefix-map` are exported across the GNU-lib/ELF toolchain slices; the
+  KEY for GNU tools is that they bake `$prefix` into binaries, so the install
+  spec must be PINNED (path-mapping alone is insufficient). Full byte-repro of
+  the busybox build (reprobuild flags) is a follow-on.
 - **Content address is the full 256-bit SHA-256 hex `String`**: `content_hash`
-  returns the 64-char lowercase digest (Nix-style, collision-safe) and the
+  returns the 64-char lowercase digest (collision-safe) and the
   store is NESTED — `realize_one` + the derive slices create
   `store/<hexca>/<name>-<ver>.{src,bin,meta.json}` via stdlib `fs::mkdir`
   (Vyb #195 Items 1&2). No flat store, no host `mkdir -p`, no FNV-1a.
@@ -147,6 +149,13 @@ mirroring Nix derivations.
   `-frandom-seed`/`-fno-guess-branch-probability` + `-ffile-prefix-map=$B/=`, and
   builds twice into TWO DIFFERENT build roots (`$B/kbA`/`$B/kbB`), asserting
   identical bzImage — proven path-independent (sha `4201e8e4…`).
+- **Independent-build reprobuild proofs (2026-08-26)**: `build-reprobuild-binutils.vyb`
+  builds binutils twice into independent build roots (under `SOURCE_DATE_EPOCH` +
+  `-ffile-prefix-map` + a PINNED install spec) and proves `ld`/`as`/`ar`
+  byte-identical (`REPROBUILD:BINUTILS:PASS`). `build-reprobuild-gcc.vyb` extends
+  the same to the WHOLE tower — gmp→mpfr→mpc→binutils→gcc built twice into two
+  independent roots — byte-identical (`REPROBUILD:GCC:PASS`). Gotcha: create the
+  per-build root (`mkdir -p $G`) BEFORE `cd` into it.
 - **Kernel build deps must be compiled, not skipped**: x86_64 objtool is
   unconditional and links libelf; kconfig regenerates its lexer/parser with
   flex/bison. The kernel derivation builds bison/flex/elfutils in-scratch.

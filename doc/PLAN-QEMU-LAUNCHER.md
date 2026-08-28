@@ -1,6 +1,6 @@
 # Plan — VybOS Issue #1: First-class QEMU launcher (`tools/vybos-run`)
 
-> Status: PLAN · 2026-08-25 · Author: VybOS framework session
+> Status: PLAN · 2026-08-25 · **reconciled 2026-08-26** (launcher shipped; derived kernel/QEMU boot real; blockers lifted)
 > Tracks: https://github.com/rickenator/VybOS/issues/1 (enhancement, good-first-issue)
 > Companion docs: `README.md`, `GOAL.md`, `doc/ARCHITECTURE.md`, `doc/STATUS.md`.
 
@@ -8,35 +8,38 @@
 
 Issue #1 asks for `tools/vybos-run` — a developer/CI launcher that boots a VybOS
 image under QEMU, uses a disposable overlay, captures serial logs, and drives an
-automated smoke test. The **tooling design is sound and buildable now**. But the
-issue's acceptance criteria assume a bootable `build/vybos.img` **does not exist
-yet**: VybOS today produces only a content-addressed `store/` of *source* blobs,
-not a bootable OS image. Per the issue's own instruction to report mismatches
-rather than force an obsolete assumption, this plan **front-loads that blocker**
-and splits the work into (A) a boot-target decision (prerequisite, needs Rick) and
-(B) a launcher scaffold that is fully testable against a stand-in image.
+automated smoke test. **That launcher now exists and ships with three runtimes**
+(`bwrap` default, `docker`, and `qemu` — kernel+initramfs self-boot). The boot
+target that the issue's acceptance criteria were blocked on was **decided
+(Option B: container rootfs first)**, and the QEMU line now boots the **derived
+`linux-6.6` kernel** (compiled by the derived gcc) under the **derived QEMU
+hypervisor**, purely from nested-store artifacts, to `VYBOS_READY`. The remaining
+acceptance criteria (persistent root/disk image + gen-switch + VybOS's own
+userspace) are still ahead; this plan front-loads and tracks that path.
 
 ---
 
 ## 1. Grounding: what VybOS actually produces today (verified)
 
-| Thing | Current state |
+| Thing | Current state (2026-08-26) |
 | --- | --- |
 | Config-as-program | ✅ `config/system.vyb` → `SystemSpec` (module-composed) |
-| Framework | ✅ compose → validate → digest → plan → execute (all vi vbey) |
-| Build output | `store/` — content-addressed **source blobs** (`.src` + `.meta.json`) per derivation, per member. NOT a filesystem/image. |
-| Kernel | ❌ none fetched/assembled |
-| Initramfs / initrd | ❌ none |
-| Rootfs / disk image | ❌ none |
-| Bootloader | ❌ none (`replace systemd/bootloader` is an explicit non-goal; no grub/syslinux) |
-| `tools/` | ❌ does not exist |
-| QEMU scripts/experiments | ❌ none in repo |
-| Boot target decision | ⏳ **open** — kernel+initramfs on QEMU vs container rootfs first (README:158) |
+| Framework | ✅ compose → validate → digest → plan → execute (all in vybey) |
+| Build output | `store/` — **nested** content-addressed source+built artifacts (`store/<hexca>/<name>-<ver>.{src,bin,meta.json}`), full 256-bit SHA-256 hex |
+| Rootfs | ✅ `build/build-rootfs.vyb` → `build/rootfs-out` (config-driven `/init`, `/etc/vyb-os`); boots to `VYBOS_READY` |
+| Kernel | ✅ **DERIVED** `linux-6.6` bzImage (from source, compiled by the derived gcc; path-independent byte-deterministic) — replaces the fetched `vmlinuz` stop-gap |
+| Hypervisor | ✅ **DERIVED** `qemu-system-x86_64` 8.2.2 (from source) packaged with glib + pc-bios into a nested store entry |
+| Initramfs / initrd | ✅ rootfs booted as initramfs under the derived kernel (QEMU self-boot to READY) |
+| Root/disk image + bootloader | ❌ none yet (`replace systemd/bootloader` is an explicit non-goal; no grub/syslinux) |
+| `tools/` | ✅ `tools/vybos-run` ships: `--test` (bwrap/docker), `--runtime qemu --kernel <out> --test` |
+| Boot target decision | ✅ **DECIDED 2026-08-25: Option B (container rootfs first)**; QEMU kernel+initramfs self-boot also demonstrated |
 
-**Consequence:** acceptance criteria 1, 2, 3, 5, 6, 10, 11 of issue #1 ("boot a
-freshly built VybOS image", etc.) **cannot be met until a bootable target
-exists**. They are not launcher bugs — they are blocked on a missing
-prerequisite.
+**Consequence:** a *bootable target* now exists (container rootfs + a derived
+kernel+initramfs QEMU self-boot), so the launcher's core smoke path is real.
+Issue #1's image-gated acceptance criteria (1, 2, 3, 5, 6, 10, 11 — "boot a
+freshly built VybOS image", persistent disk image, gen-switch) still wait on the
+remaining **B5 root/disk image + bootloader + VybOS's own userspace**, not on the
+launcher itself.
 
 **Two things issue #1 gets right (keep):**
 - Launcher need not require Vyb itself — Bash/Python is fine; a native-Vyb
@@ -46,7 +49,7 @@ prerequisite.
 
 ---
 
-## 2. The gating prerequisite: pick a boot target (needs Rick)
+## 2. The gating prerequisite: pick a boot target — **LOCKED 2026-08-25**
 
 Before any boot-line acceptance can pass, VybOS must produce *something*
 bootable. Two live options (this is the open decision in README/STATUS):
@@ -54,8 +57,8 @@ bootable. Two live options (this is the open decision in README/STATUS):
 - **Option A — QEMU x86_64: kernel + initramfs, minimal BusyBox-or-vyb rootfs.**
   Aligns with the issue's `x86_64/q35/KVM/virtio` scope; gives a real boot path
   to develop toward. Larger lift: kernel config/fetch, initramfs generation,
-  rootfs assembly — and image assembly needs the `mkdir`/`rename` RFEs and
-  (ideally) real content hashing (issue #189 blocks big archives).
+  rootfs assembly — and image assembly needs the `rename` RFE (for the atomic
+  gen-switch), `mkdir`/real content hashing now landed (#195 items 1–2).
 - **Option B — container rootfs (OCI/rootfs tarball, no kernel).**
   Much earlier win: a rootfs is "just" a realized source tree + config
   materialized into a directory layout — which is close to what `store/`
@@ -201,79 +204,76 @@ robustness + test check list; the issue permits either). No libvirt, no root.
 
 ---
 
-## 6. Launcher-first, stand-in-image validation (unblocks now)
+## 6. Launcher-first validation — **SHIPPED + SUPERSEDED by the derived boot**
 
-Because there is no real VybOS image yet, still ship and validate the launcher
-now against a **stand-in boot image**: a minimal QEMU-bootable initramfs/rootfs
-(micro HiSys / BusyBox initrd) that:
-- boots under the same `q35 + KVM/TCG + virtio + serial` invocation, and
-- prints a distinctive `READY` serial marker and answers the same `--test`
-  smoke checks (kernel booted, root mounted, init reached, marker seen).
-
-This proves the **entire launcher contract** (overlay lifecycle, logging,
-serial capture, `--test` exit semantics, Ctrl-C cleanup, `--gdb`, `--share-vyb`
-setup, CLI/printing) against real QEMU — without pretending it's the real VybOS
-image. When a real rootfs/image lands (boot target milestone), the stand-in is
-replaced by wiring the launcher's "boot mechanism" to the new artifact (pluggable
-per §4.7/§5) and pointing smoke checks at VybOS's real markers.
-
-**This is the honest path the issue's "report mismatches, don't fabricate"
-instruction points to:** the smoke tests test the launcher + a real boot now,
-and the real VybOS smoke tests get added the moment a bootable target exists.
+The launcher was validated against a stand-in boot image to prove the **entire
+launcher contract** (overlay lifecycle, logging, serial capture, `--test` exit
+semantics, Ctrl-C cleanup, `--gdb`, `--share-vyb`, CLI/printing) against real
+QEMU. That stand-in path is now **superseded**: `tools/vybos-run` ships three
+runtimes — `bwrap` (default) and `docker` boot the materialized container
+rootfs to `VYBOS_READY`, and `--runtime qemu --kernel <out>` boots the **derived
+`linux-6.6` bzImage** (rootfs as initramfs) under the **derived QEMU hypervisor**
+to `VYBOS_READY`. All three pass `--test`. The smoke checks point at VybOS's real
+`VYBOS_READY` marker; no stand-in is pretending to be the real image.
 
 ---
 
-## 7. Dependencies / blockers to watch
+## 7. Dependencies / blockers to watch (reconciled 2026-08-26)
 
-- **#189 (Vyb, open):** string-registry cap blocks realizing large source
-  archives → a rootfs/image assembly may trip on big trees. Workaround: build
-  rootfs from small sources, or wait for the runtime fix. (VybOS-side, not a
-  launcher blocker.)
-- **`mkdir`/`rename` stdlib RFEs:** nested store / rootfs materialization and
-  atomic profile swap. Rootfs assembly needs `mkdir`; generation switch wants
-  `rename`/`symlink`. (Blocked on impl agent.)
-- **Boot target decision** (Rick) gate on everything boot-line (this is the
-  #1 prerequisite milestone → see §2).
+- **#189 (Vyb, string-registry cap) CLOSED (2026-08-25)** — with #191's O(N)
+  inflate + bounded probe chains, realistic MB-scale trees realize cleanly; no
+  longer a launcher/rootfs blocker.
+- **`mkdir` stdlib RFE: LANDED** (Vyb #195 item 1) — nested store + rootfs
+  materialization no longer wait on the impl agent. The **`rename`/`symlink`**
+  RFE is the one remaining runtime dep, for the atomic generation/profile flip
+  (B5 gen-switch).
+- **Boot target: LOCKED (2026-08-25, Option B)** — no longer a gate (§2).
+- **Remaining boot-line work:** B5 persistent root/disk image + bootloader +
+  VybOS's own (non-stand-in) userspace.
 
 ---
 
 ## 8. Implementation phases
 
-| Phase | Scope | Depends on | Verify |
+| Phase | Scope | Status (2026-08-26) | Verify |
 | --- | --- | --- | --- |
-| P0 | Boot target decision + rootfs.v1 (Option B recommended) | Rick approval; `mkdir` RFE | `build-*` produce a rootfs dir/tarball |
-| P1 | `tools/vybos-run` scaffold: CLI, overlay, QEMU defaults, serial, logging, `.gitignore` | — | boots a **stand-in** image; overlay removed; logs written |
-| P2 | `--headless/--gui/--keep/--no-kvm/--memory/--cpus/--gdb` | P1 | interactive + flags verified |
-| P3 | `--test` + smoke-check list + timeout + exit semantics | P1 | `--test` returns 0 on stand-in ready; nonzero on induced failure |
-| P4 | `--ssh-port` (only if VybOS runs SSH) + `--share-vyb` | P1, VybOS SSH | forwarding + host mount verified |
-| P5 | Wire to real VybOS boot target; VybOS-specific smoke checks | P0, real image | issue acceptance 1–14 against the real image |
+| P0 | Boot target decision + rootfs.v1 (Option B) | ✅ **done** — Option B locked 2026-08-25; `build-rootfs.vyb` → `build/rootfs-out` | `build-*` produce a rootfs dir |
+| P1 | `tools/vybos-run` scaffold: CLI, overlay, QEMU defaults, serial, logging, `.gitignore` | ✅ **done** — launcher ships (bwrap/docker/qemu) | boots to `VYBOS_READY`; overlay removed; logs written |
+| P2 | `--headless/--gui/--keep/--no-kvm/--memory/--cpus/--gdb` | ⏳ shipped w/ launcher; per-flag parity a follow-up | interactive + flags verified |
+| P3 | `--test` + smoke-check list + timeout + exit semantics | ✅ **done** — `--test` returns 0 on READY across all three runtimes | `--test` 0 on ready; nonzero on induced failure |
+| P4 | `--ssh-port` (only if VybOS runs SSH) + `--share-vyb` | ⏳ VybOS doesn't run SSH yet; follow-on | forwarding + host mount verified |
+| P5 | Wire to a real VybOS boot target; VybOS-specific smoke checks | ⏳ boot target real; image-gated criteria wait on B5 | issue acceptance 1–14 against a **persistent image** |
 | P6 (later) | Native-Vyb rewrite of launcher; ARM64/UEFI/... as designed-for-provable | — | — |
 
-Acceptance (issue criteria 1–14) will be checked phase-by-phase; criteria that
-are image-gated stay RED until P0/P5 deliver a bootable VybOS artifact.
+Acceptance (issue criteria 1–14) is checked phase-by-phase; criteria that are
+gated on a **persistent root/disk image + gen-switch** (B5) stay RED until that
+image lands — the launcher and the derived self-boot are otherwise real.
 
 ---
 
 ## 9. Open questions for Rick (before/at P0)
 
-1. **Boot target:** Option A (QEMU kernel+initramfs) vs **Option B (container
-   rootfs first, recommended)** — pick the first-boot milestone.
+1. ~~**Boot target:** Option A vs Option B?~~ — **DECIDED 2026-08-25: Option B**
+   (container rootfs first); a QEMU kernel+initramfs self-boot was subsequently
+   *also* demonstrated with the derived kernel/QEMU.
 2. **Launcher language:** Python (recommended: robust CLI/traps/checks, permits
-   Bash per issue) vs Bash.
-3. **Stand-in validation image:** OK to introduce a tiny BusyBox/initramfs
-   stand-in now so the launcher contract is proven against real QEMU before the
-   real image exists? (Recommended yes.)
-4. **Log convention:** OK to establish `.logs/qemu/` (+ gitignore) as the repo
-   convention the issue asks us to follow-if-present? (No convention exists yet.)
+   Bash per issue) vs Bash — decided at implementation; launcher ships.
+3. ~~**Stand-in validation image?**~~ — **DONE**: validated the launcher contract
+   against a stand-in boot image, then **superseded** by the derived kernel/QEMU
+   self-boot (all three runtimes boot `VYBOS_READY`).
+4. **Log convention:** `.logs/qemu/` (+ gitignore) — established with the
+   launcher; follow-if-present per issue guidance.
 5. **`--share-vyb` guest support:** VirtioFS/9p needs guest kernel/driver
-   support; acceptable to gate it behind the stand-in/real kernel having those?
+   support; acceptable to gate it behind the kernel having those.
 
 ---
 
 ## 10. Deliverable (this milestone)
 
-- This planning document (done).
-- After Rick answers §9: P1 launcher scaffold validated against the stand-in
-  image, with docs (`README` section + a `tools/vybos-run --help`),
-  smoke-test list, and repo integration — **before** any marked-DONE acceptance
-  that requires a real VybOS image.
+- This planning document (done, reconciled 2026-08-26).
+- ✅ P1 launcher (`tools/vybos-run`) shipped — three runtimes, `--test` smoke
+  path, `VYBOS_READY` marker — with repo integration; the QEMU line now boots the
+  **derived** kernel/QEMU from nested-store artifacts.
+- ⏳ Remaining before issue #1's image-gated acceptance can go GREEN: a
+  **persistent root/disk image (B5) + bootloader + gen-switch + VybOS's own
+  userspace** — the launcher itself is real, not a stand-in.
