@@ -239,7 +239,7 @@ to `VYBOS_READY`. All three pass `--test`. The smoke checks point at VybOS's rea
 | --- | --- | --- | --- |
 | P0 | Boot target decision + rootfs.v1 (Option B) | ✅ **done** — Option B locked 2026-08-25; `build-rootfs.vyb` → `build/rootfs-out` | `build-*` produce a rootfs dir |
 | P1 | `tools/vybos-run` scaffold: CLI, overlay, QEMU defaults, serial, logging, `.gitignore` | ✅ **done** — launcher ships (bwrap/docker/qemu) | boots to `VYBOS_READY`; overlay removed; logs written |
-| P2 | `--headless/--gui/--keep/--no-kvm/--memory/--cpus/--gdb` | ⏳ shipped w/ launcher; per-flag parity a follow-up | interactive + flags verified |
+| P2 | `--headless/--gui/--keep/--no-kvm/--memory/--cpus/--gdb` | ✅ **done (2026-08-28)** — full flag set for the `qemu` runtime: KVM auto-detect w/ TCG fallback (+`--no-kvm`), `-m`/`-smp`, `-nographic` vs display, `-gdb tcp::1234 -S`, persistent serial log under `.logs/qemu/` (gitignored), effective-params printout. `--disk/--ssh-port/--share-vyb` are recognized and rejected with a clear message (await B5 image / SSH / guest virtiofs) | `--runtime qemu --test` PASS (READY) on TCG |
 | P3 | `--test` + smoke-check list + timeout + exit semantics | ✅ **done** — `--test` returns 0 on READY across all three runtimes | `--test` 0 on ready; nonzero on induced failure |
 | P4 | `--ssh-port` (only if VybOS runs SSH) + `--share-vyb` | ⏳ VybOS doesn't run SSH yet; follow-on | forwarding + host mount verified |
 | P5 | Wire to a real VybOS boot target; VybOS-specific smoke checks | ⏳ boot target real; image-gated criteria wait on B5 | issue acceptance 1–14 against a **persistent image** |

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/vybos-run — VybOS rootfs launcher (issue #1 launcher shape).
+# tools/vybos-run — VybOS rootfs/QEMU launcher (issue #1 launcher shape).
 #
 # Boots the staged VybOS rootfs (default build/rootfs-out) to a defined
 # VYBOS_READY state. A temp overlay copy is seeded with a static BusyBox
@@ -11,22 +11,43 @@
 #   bwrap  (default)  container-rootfs boot in a disposable bubblewrap sandbox (unprivileged)
 #   docker            container-rootfs boot via docker import + run (needs docker daemon + group)
 #   qemu              QEMU kernel+initramfs self-boot (Option A / B4): boots the rootfs as
-#                     an initramfs under a real Linux kernel (Alpine netboot vmlinuz-virt, fetched
-#                     to build/kernel-cache or --kernel), reaches READY on the serial console.
+#                     an initramfs under a Linux kernel (derived store bzImage --kernel, or cached
+#                     Alpine netboot vmlinuz-virt), reaches READY on the serial console.
 #
 # Honest scope: bwrap/docker are CONTAINER-ROOTFS boots (B1 + B3-lite). qemu is
 # a real kernel+initramfs boot (B4, Option A) — this is what closes the
 # "bootable image" line. Userspace in all modes is a stand-in static BusyBox,
-# seeded at launch, until VybOS ships its own.
+# seeded at launch, until VybOS ships its own. A persistent root/disk image
+# (B5), SSH-in-guest, and guest virtiofs are still ahead — the corresponding
+# flags (--disk, --ssh-port, --share-vyb) are recognized and rejected clearly.
 #
 # Usage:
-#   tools/vybos-run [--rootfs <dir>] [--runtime bwrap|docker|qemu] [--kernel <path>] [--keep] [--test]
+#   tools/vybos-run [OPTIONS]
+#     --runtime <bwrap|docker|qemu>   default bwrap
 #     --test      boot and assert config paths exist + init reached READY -> exit 0/1
-#     --runtime   bwrap (default, unprivileged) | docker | qemu (kernel+initramfs)
-#     --kernel    explicit kernel bzImage for --runtime qemu (else cached Alpine vmlinuz-virt)
-#     --rootfs    staged rootfs dir (default ../build/rootfs-out)
-#     --keep      keep the disposable overlay on exit (debugging)
-#     --busybox   path to a static busybox to seed (default /usr/bin/busybox)
+#     --keep      keep the disposable overlay (and any serial log) on exit (debugging)
+#
+#   Rootfs/container options (all runtimes):
+#     --rootfs <dir>    staged rootfs dir (default ../build/rootfs-out)
+#     --busybox <path>  static busybox to seed (default /usr/bin/busybox)
+#
+#   QEMU options (--runtime qemu):
+#     --kernel <bzImage>     explicit kernel bzImage (derived store one, or cached vmlinuz-virt)
+#     --memory <size>        guest RAM for -m (default 256M)
+#     --cpus <n>             vCPUs for -smp (default 1)
+#     --headless             serial-only, -nographic (DEFAULT)
+#     --gui                  open a display instead of -nographic
+#     --no-kvm               force TCG (default: use KVM when /dev/kvm is writable, else TCG)
+#     --gdb                  start QEMU paused under gdb (tcp::1234, -S)
+#     --log <path>           write the serial log here (default: .logs/qemu/vybos-<ts>.log)
+#     --qemu <bin>           qemu binary (default qemu-system-x86_64; or store/<qca>/qemu-system-x86_64)
+#     --qemu-libdir <dir>    # LD_LIBRARY_PATH for a bare derived qemu (its glib)
+#     --qemu-data <dir>      # QEMU -L data dir (pc-bios firmware) for a bare derived qemu
+#
+#   Pending (rejected with a clear message today; see doc/PLAN-QEMU-LAUNCHER.md):
+#     --disk <img>           # persistent root/disk image (B5) — not built yet
+#     --ssh-port <port>      # needs VybOS to actually run SSH
+#     --share-vyb <dir>      # guest virtiofs/9p — needs a disk-image based boot
 #
 set -uo pipefail
 
@@ -42,6 +63,12 @@ KERNEL="${VYBOS_KERNEL:-}"
 QEMU_BIN="${VYBOS_QEMU:-qemu-system-x86_64}"
 QEMU_LIBDIR="${VYBOS_QEMU_LIBDIR:-}"
 QEMU_DATA="${VYBOS_QEMU_DATA:-}"   # QEMU -L data dir (firmware/pc-bios); needed for a bare derived qemu
+MEMORY="${VYBOS_MEMORY:-256M}"
+CPUS="${VYBOS_CPUS:-1}"
+HEADLESS=1
+NO_KVM=0
+GDB=0
+LOGFILE="${VYBOS_LOG:-}"
 KERNEL_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/vmlinuz-virt"
 MODE=run
 RUNTIME="${VYBOS_RUNTIME:-bwrap}"
@@ -54,11 +81,21 @@ while [ $# -gt 0 ]; do
     --rootfs) ROOTFS="$2"; shift ;;
     --runtime) RUNTIME="$2"; shift ;;
     --kernel) KERNEL="$2"; shift ;;
+    --memory) MEMORY="$2"; shift ;;
+    --cpus) CPUS="$2"; shift ;;
+    --headless) HEADLESS=1 ;;
+    --gui) HEADLESS=0 ;;
+    --no-kvm) NO_KVM=1 ;;
+    --gdb) GDB=1 ;;
+    --log) LOGFILE="$2"; shift ;;
     --qemu) QEMU_BIN="$2"; shift ;;
     --qemu-libdir) QEMU_LIBDIR="$2"; shift ;;
     --qemu-data) QEMU_DATA="$2"; shift ;;
     --busybox) BUSYBOX="$2"; shift ;;
-    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --disk) echo "error: --disk needs a built persistent root/disk image (B5), not produced yet — see doc/PLAN-BUILD-DERIVATIONS+PLAN_BOOTABLE_IMAGE" >&2; exit 2 ;;
+    --ssh-port) echo "error: --ssh-port needs VybOS to actually run SSH in-guest — not yet" >&2; exit 2 ;;
+    --share-vyb) echo "error: --share-vyb needs a disk-image based boot (guest virtiofs/9p) — pending B5" >&2; exit 2 ;;
+    -h|--help) grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -123,26 +160,51 @@ case "$RUNTIME" in
     cp -a "$OVL"/. "$IR"/
     INITRD=$(mktemp /tmp/vybos-initrd.XXXXXX)
     ( cd "$IR" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -1 ) > "$INITRD"
-    SERIAL=$(mktemp /tmp/vybos-serial.XXXXXX)
+
     # use a DERIVED qemu if given; its glib lives in --qemu-libdir (LD_LIBRARY_PATH)
     # and its firmware in --qemu-data (QEMU -L).
     if [ -n "$QEMU_LIBDIR" ]; then export LD_LIBRARY_PATH="${QEMU_LIBDIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
     QDATA=(); [ -n "$QEMU_DATA" ] && QDATA=(-L "$QEMU_DATA")
-    "$QEMU_BIN" -m 256M -accel tcg -kernel "$KERNEL" -initrd "$INITRD" \
-        -append "console=ttyS0 rdinit=/init" "${QDATA[@]}" -nographic -no-reboot > "$SERIAL" 2>&1 &
+
+    # accel: KVM when writable, else TCG (this host has no /dev/kvm); --no-kvm forces TCG.
+    ACCEL=tcg
+    if [ "$NO_KVM" = 0 ] && [ -w /dev/kvm ]; then ACCEL=kvm; fi
+    [ "$NO_KVM" = 1 ] && ACCEL=tcg
+
+    # persistent serial log (issue #1 log convention): default under .logs/qemu/.
+    if [ -z "$LOGFILE" ]; then
+      LOGDIR="$ROOT/.logs/qemu"; LOGSTAMP=$(date +%Y%m%d-%H%M%S)
+      LOGFILE="$LOGDIR/vybos-$LOGSTAMP.log"
+    fi
+    mkdir -p "$(dirname "$LOGFILE")"
+
+    # print effective launch params (issue: don't boot blind).
+    echo "runtime=qemu kernel=$KERNEL memory=$MEMORY cpus=$CPUS accel=$ACCEL qemu=$QEMU_BIN" >&2
+    echo "serial log -> $LOGFILE" >&2
+
+    # QEMU invocation (serial -> THE log so it is captured on failure too).
+    QARGS=(-m "$MEMORY" -smp "$CPUS" -accel "$ACCEL" -kernel "$KERNEL" -initrd "$INITRD")
+    [ "$GDB" = 1 ] && QARGS+=(-gdb tcp::1234 -S)
+    if [ "$HEADLESS" = 1 ]; then
+      QARGS+=(-append "console=ttyS0 rdinit=/init" -nographic -no-reboot)
+    else
+      QARGS+=(-append "console=ttyS0 rdinit=/init" -no-reboot)
+    fi
+    [ ${#QDATA[@]} -gt 0 ] && QARGS+=("${QDATA[@]}")
+    "$QEMU_BIN" "${QARGS[@]}" > "$LOGFILE" 2>&1 &
     QPID=$!
     # wait up to ~180s for the READY marker on serial (TCG is slow; no /dev/kvm).
     i=0; ready=0
     while [ $i -lt 360 ]; do
-      grep -q 'VYBOS_READY=1' "$SERIAL" 2>/dev/null && { ready=1; break; }
+      grep -q 'VYBOS_READY=1' "$LOGFILE" 2>/dev/null && { ready=1; break; }
       kill -0 "$QPID" 2>/dev/null || break
       sleep 0.5; i=$((i+1))
     done
-    kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+    [ "$KEEP" = 1 ] || kill "$QPID" 2>/dev/null
+    wait "$QPID" 2>/dev/null
     rm -rf "$IR" "$INITRD"
     rc=0; [ "$ready" = 1 ] || rc=1
-    OUT="$(cat "$SERIAL")"
-    rm -f "$SERIAL"
+    OUT="$(cat "$LOGFILE")"
     ;;
   *)
     echo "unknown --runtime: $RUNTIME" >&2; exit 2 ;;
@@ -161,9 +223,11 @@ echo ""
 if [ "$MODE" = test ]; then
   if [ "$paths_ok" = 1 ] && [ "$ready" = 1 ] && [ "$rc" = 0 ]; then
     echo "VYBOS-RUN TEST PASS (ready, all config paths present)"
+    [ "$KEEP" = 1 ] && [ "$RUNTIME" = qemu ] && echo "serial log kept: $LOGFILE"
     exit 0
   fi
   echo "VYBOS-RUN TEST FAIL (paths_ok=$paths_ok ready=$ready rc=$rc)"
+  [ "$RUNTIME" = qemu ] && [ -n "$LOGFILE" ] && echo "serial log: $LOGFILE"
   exit 1
 fi
 exit "$rc"
