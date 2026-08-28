@@ -107,6 +107,9 @@ if [ -n "$DISK" ] && [ "$RUNTIME" != qemu ]; then
   echo "error: --disk <img> requires --runtime qemu (bwrap/docker boot the rootfs overlay, not a disk image)" >&2
   exit 2
 fi
+# normalize --disk to an absolute path (qemu-img resolves the backing file
+# relative to the overlay dir in /tmp, so a relative store/... base breaks it).
+if [ -n "$DISK" ] && [ "${DISK#/}" = "$DISK" ]; then DISK="$PWD/$DISK"; fi
 
 # kernel resolution for qemu: --kernel wins; a --disk boot requires the DERIVED
 # kernel (ext4 + virtio-blk built-in — the Alpine netboot vmlinuz can't mount a
@@ -161,8 +164,10 @@ for n in os.listdir(d):
         os.unlink(p); os.symlink("busybox", p)
 PY
 fi
+OVL=${OVL:-}    # rootfs overlay (bwrap/docker/rootfs-qemu)
+QOVER=${QOVER:-} # disposable writable QCOW2 overlay over the --disk base image
 trap 'cleanup' EXIT
-cleanup() { [ "$KEEP" = 0 ] && [ -n "$OVL" ] && rm -rf "$OVL"; }
+cleanup() { if [ "$KEEP" = 0 ]; then [ -n "$OVL" ] && rm -rf "$OVL"; [ -n "$QOVER" ] && rm -f "$QOVER"; fi; }
 
 # 3. boot it.
 case "$RUNTIME" in
@@ -200,9 +205,18 @@ case "$RUNTIME" in
     if [ -n "$DISK" ]; then
       # ---- DISK boot (B5): persistent root image mounted as /dev/vda ----
       if [ ! -s "$DISK" ]; then echo "no usable disk image at $DISK" >&2; exit 1; fi
-      echo "runtime=qemu disk=$DISK kernel=$KERNEL memory=$MEMORY cpus=$CPUS accel=$ACCEL qemu=$QEMU_BIN" >&2
+      # Disposable writable QCOW2 overlay (issue #1 immutability, §4.1): the
+      # canonical store image is NEVER modified; writes go to a temp overlay
+      # (rm'd on exit unless --keep). Fall back to direct raw if qemu-img absent.
+      QOVER=$(mktemp /tmp/vybos-overlay.XXXXXX.qcow2)
+      if qemu-img create -f qcow2 -b "$DISK" -F raw "$QOVER" >/dev/null 2>&1; then
+        DRIVE="file=$QOVER,format=qcow2,if=virtio"
+      else
+        rm -f "$QOVER"; QOVER=""; DRIVE="file=$DISK,format=raw,if=virtio"
+      fi
+      echo "runtime=qemu disk=$DISK overlay=$([ -n "$QOVER" ] && echo "$QOVER" || echo "direct(no qemu-img)") kernel=$KERNEL memory=$MEMORY cpus=$CPUS accel=$ACCEL qemu=$QEMU_BIN" >&2
       echo "serial log -> $LOGFILE" >&2
-      QARGS=(-m "$MEMORY" -smp "$CPUS" -accel "$ACCEL" -kernel "$KERNEL" -drive "file=$DISK,format=raw,if=virtio")
+      QARGS=(-m "$MEMORY" -smp "$CPUS" -accel "$ACCEL" -kernel "$KERNEL" -drive "$DRIVE")
       [ "$GDB" = 1 ] && QARGS+=(-gdb tcp::1234 -S)
       if [ "$HEADLESS" = 1 ]; then QARGS+=(-append "root=/dev/vda rw init=/init console=ttyS0" -nographic -no-reboot)
       else QARGS+=(-append "root=/dev/vda rw init=/init console=ttyS0" -no-reboot); fi
@@ -215,7 +229,7 @@ case "$RUNTIME" in
         kill -0 "$QPID" 2>/dev/null || break
         sleep 0.5; i=$((i+1))
       done
-      [ "$KEEP" = 1 ] || kill "$QPID" 2>/dev/null
+      kill "$QPID" 2>/dev/null
       wait "$QPID" 2>/dev/null
       rc=0; [ "$ready" = 1 ] || rc=1
       OUT="$(cat "$LOGFILE")"
@@ -241,7 +255,7 @@ case "$RUNTIME" in
         kill -0 "$QPID" 2>/dev/null || break
         sleep 0.5; i=$((i+1))
       done
-      [ "$KEEP" = 1 ] || kill "$QPID" 2>/dev/null
+      kill "$QPID" 2>/dev/null
       wait "$QPID" 2>/dev/null
       rm -rf "$IR" "$INITRD"
       rc=0; [ "$ready" = 1 ] || rc=1
@@ -268,6 +282,7 @@ if [ "$MODE" = test ]; then
   if [ "$paths_ok" = 1 ] && [ "$ready" = 1 ] && [ "$rc" = 0 ]; then
     echo "VYBOS-RUN TEST PASS (ready, all config paths present)"
     [ "$KEEP" = 1 ] && [ "$RUNTIME" = qemu ] && echo "serial log kept: $LOGFILE"
+    [ "$KEEP" = 1 ] && [ -n "$QOVER" ] && echo "overlay kept: $QOVER (base image immutable)"
     exit 0
   fi
   echo "VYBOS-RUN TEST FAIL (paths_ok=$paths_ok ready=$ready rc=$rc)"
