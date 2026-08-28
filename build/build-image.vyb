@@ -143,7 +143,7 @@ main()<Int> -> {
         "    if os.path.islink(p) and n0!=\"busybox\": os.unlink(p); os.symlink(\"busybox\",p)\n")) {
         println("  FAIL write relink.py"); return 1
     }
-    recipe<String> = "D=\"" + ROOTD + "\" && mkdir -p \"$D/bin\" && " +
+    recipe<String> = "D=\"" + ROOTD + "\" && mkdir -p \"$D/bin\" \"$D/dev\" && " +
         "cp /usr/bin/busybox \"$D/bin/busybox\" && chmod +x \"$D/bin/busybox\" && " +
         "\"$D/bin/busybox\" --install -s \"$D/bin\" >/dev/null 2>&1; " +
         "python3 \"" + OUTD + "/relink.py\" \"$D/bin\" && " +

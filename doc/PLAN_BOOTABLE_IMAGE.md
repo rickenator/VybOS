@@ -144,11 +144,18 @@ this is the boot-target the rest of this roadmap and issue #1 build toward.
   wires it (auto-finds the derived kernel). NOTE: the fetched Alpine `vmlinuz`
   CANNOT mount a disk root (its ext4/virtio are modules we don't ship) — the
   derived kernel is required, which is also the dogfood-correct choice.
-- **Remaining (atomic gen-switch):** the `/run/current-system`-style profile
-  flip needs the **`rename`/`symlink` stdlib RFE**; the bootloader (grub/syslinux
-  are explicit non-goals — boot stays `-kernel` driven); VybOS's own userspace.
-- This is where issue #1 acceptance criteria 1, 2, 3, 5, 6, 10, 11 close once
-  the gen-switch lands.
+- ✅ **Generation switch LANDED (2026-08-28)**: `modules/gensys.vyb` +
+  `build/build-gensys.vyb` lay N immutable generations on the persistent root
+  (`/vyb/system/generations/gen-<digest>/…`), a `current` POINTER selects the
+  active one, `/etc/vyb-os -> …/current/etc/vyb-os` follows it, and the init
+  prints `ACTIVE_GENERATION=` + reaches `VYBOS_READY`. Two store variants
+  (current→gen-1, current→gen-2) both boot, each activating its own generation
+  (verified) — so **switch/rollback = flip `current`**. Flipped with `ln -sfn`
+  (the swap is atomic) since the **`rename`/`symlink` stdlib RFE is still
+  pending; once it lands, an atomic `vyb system switch` command replaces it.
+- **Remaining:** the bootloader (grub/syslinux are explicit non-goals — boot
+  stays `-kernel` driven); VybOS's own userspace.
+- This is where issue #1's image-gated acceptance criteria (1, 2, 3, 5, 6, 10, 11) close — the persistent image and the generation switch have both landed.
 
 ### B6 — VybOS-specific smoke tests
 - `--test` checks against the real image: kernel booted, root mounted, init

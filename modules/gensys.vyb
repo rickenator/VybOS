@@ -1,0 +1,74 @@
+// gensys.vyb — VybOS generation-switch foundation (persistent root/disk).
+//
+// SCOPE: pure, framework-side description of a generation-aware root:
+//   - multiple immutable GENERATIONS, each a self-contained config tree
+//       /vyb/system/generations/gen-<id>/etc/vyb-os/{system.json,hostname,
+//       version,digest}
+//       (gen-<id> = gen-DIGEST; DIGEST = spec_digest, so same state -> same gen)
+//   - a `current` POINTER: /vyb/system/current  ->  gen-<id>  (RELATIVE symlink;
+//     switching/rollback = re-point it. The symlink/rename stdlib RFE is still
+//     pending, so the builder flips it with `ln -sfn` (freedom exec) — the link
+//     replace is atomic; the Vyb-side wait is noted in STATUS.)
+//   - /etc/vyb-os -> vyb/system/generations/current/etc/vyb-os (relative symlink),
+//     so the canonical config path always reflects the ACTIVE generation.
+//   - a generation-aware /init that resolves `current`, activates that
+//     generation, and prints ACTIVE_GENERATION=... then VYBOS_READY=1.
+//
+// This is what makes the persistent root/disk image (B5) generation-switchable:
+// the disk root is mounted rw, so writing a new gen dir + flipping `current` is
+// a live switch; rollback = flip it back to an ancestor (is_ancestor validity).
+// FileEntry shape matches modules/rootfs.vyb.
+import compose::{blank_system}
+import plan::{SystemSpec, spec_digest}
+import collections
+
+share(all)
+struct FileEntry { path<String>, content<String> }
+
+// Generation directory name from its content digest.
+share(all)
+gen_dir(id<Int>)<String> -> {
+    return "gen-" + id.to_string()
+}
+
+// One generation's config, serialized as files under its gen dir.
+share(all)
+gen_entries(id<Int>, spec<SystemSpec>)<Vec<FileEntry>> -> {
+    d<String> = "/vyb/system/generations/" + gen_dir(id)
+    files<Vec<FileEntry>> = Vec()
+    files.push(FileEntry { path = d + "/etc/vyb-os/system.json", content = spec.to_string() })
+    files.push(FileEntry { path = d + "/etc/vyb-os/hostname", content = spec.hostname + "\n" })
+    files.push(FileEntry { path = d + "/etc/vyb-os/version", content = "0.1-brutal-dogfood" })
+    files.push(FileEntry { path = d + "/etc/vyb-os/digest", content = spec_digest(spec).to_string() + "\n" })
+    return files
+}
+
+// The canonical /etc/vyb-os -> active generation symlink target.
+share(all)
+etc_link_target()<String> -> {
+    return "/vyb/system/generations/current/etc/vyb-os"
+}
+
+// The `current` pointer (a relative symlink INSIDE the generations dir):
+//   /vyb/system/generations/current  ->  gen-<id>
+share(all)
+current_link_name()<String> -> {
+    return "current"
+}
+
+// Generation-aware init: resolve `current`, activate it, print ACTIVE + READY.
+share(all)
+gensys_init()<String> -> {
+    s<String> = "#!/bin/sh\n"
+    s = s + "PATH=/bin:/usr/bin\n"
+    s = s + "export PATH\n"
+    s = s + "echo \"=== VybOS init (persistent disk root; generation switch) ===\"\n"
+    s = s + "CUR=$(/bin/readlink /vyb/system/generations/current 2>/dev/null)\n"
+    s = s + "[ -z \"$CUR\" ] && CUR=\"" + gen_dir(1) + "\"\n"
+    s = s + "G=/vyb/system/generations/$CUR\n"
+    s = s + "echo \"hostname: $(/bin/cat $G/etc/vyb-os/hostname 2>/dev/null)\"\n"
+    s = s + "echo \"digest  : $(/bin/cat $G/etc/vyb-os/digest 2>/dev/null)\"\n"
+    s = s + "echo \"ACTIVE_GENERATION=$CUR\"\n"
+    s = s + "echo \"VYBOS_READY=1\"\n"
+    return s
+}

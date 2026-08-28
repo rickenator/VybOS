@@ -150,6 +150,10 @@ $VYB build/build-image.vyb $COMMON               # -> store/<ca>/vybos-0.1-root.
 # ... boot it as a REAL mounted root under the DERIVED kernel (state persists):
 $ROOT/tools/vybos-run --runtime qemu --disk store/<ca>/vybos-0.1-root.img --test
 
+# Generation switch — N immutable generations, `current` pointer selects the live one:
+$VYB build/build-gensys.vyb $COMMON              # -> store/<ca>/vybos-0.1-gen-<digest>.img x2
+$ROOT/tools/vybos-run --runtime qemu --disk store/<ca>/vybos-0.1-gen-<digest>.img --test  # ACTIVATE that gen
+
 # Build-stage derivations (fetch source -> build -> content-address OUTPUT)
 $VYB build/build-derive.vyb        $COMMON       # hello-vyb determinism spike
 $VYB build/build-derive-real.vyb   $COMMON       # busybox 1.36.1 from real source
@@ -192,8 +196,7 @@ markers are `REPROBUILD:BINUTILS:PASS` / `REPROBUILD:GCC:PASS`.)
 - [x] Derived hypervisor (QEMU-from-source) packaged into a nested store entry — full roll-your-own boot.
 - [x] Path-independent byte-deterministic kernel (built twice, byte-identical).
 - [x] Independent-build reproducibility proofs (binutils + gcc tower).
-- [~] Full bootable image: **persistent root/disk image (B5) LANDED** — `build/build-image.vyb` → nested `store/<ca>/vybos-0.1-root.img` → `tools/vybos-run --runtime qemu --disk … --test` boots it as a **real mounted root** (derived kernel) to READY. Remaining: bootloader, atomic gen-switch (needs the `rename`/`symlink` RFE), VybOS's own userspace.
-- [ ] Generations wiring: tie `spec_digest` + `plan_lines` into a generation switch (needs the `rename`/`symlink` RFE for the atomic profile flip).
+- [~] Full bootable image: **persistent root/disk image (B5) + generation switch LANDED** — `build/build-image.vyb` → nested `store/<ca>/vybos-0.1-root.img`; `build/build-gensys.vyb` + `modules/gensys.vyb` put N immutable generations on the root with a `current` pointer (`/etc/vyb-os` follows it), init prints `ACTIVE_GENERATION` + READY; `tools/vybos-run --runtime qemu --disk … --test` boots as a real mounted root (derived kernel). Remaining: bootloader, VybOS's own userspace, and an atomic `vyb system switch` command (once the `rename`/`symlink` RFE lands).
 - [ ] Module-system deepening: service options (port, args) beyond `enabled`.
 
 ## Notes

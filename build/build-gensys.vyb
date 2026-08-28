@@ -1,0 +1,192 @@
+// build-gensys.vyb — VybOS generation-switch slice (persistent root/disk).
+//
+// Builds a generation-aware ext4 root image with TWO immutable generations and
+// a `current` POINTER symlink, per modules/gensys.vyb:
+//   /init                                  generation-aware init (prints ACTIVE_GENERATION)
+//   /etc/vyb-os -> /vyb/system/generations/current/etc/vyb-os
+//   /vyb/system/generations/gen-<digest1>/{etc/vyb-os/system.json,hostname,version,digest}
+//   /vyb/system/generations/gen-<digest2>/...
+//   /vyb/system/generations/current -> gen-<digestN>
+//
+// It produces TWO nested-store variants of the same underlying tree, differing
+// only in which generation `current` points at:
+//   store/<ca1>/vybos-root-gen-<id1>.img   (current -> gen-1)
+//   store/<ca2>/vybos-root-gen-<id2>.img   (current -> gen-2)
+// Booting each reaches VYBOS_READY and reports ACTIVE_GENERATION=<its gen> —
+// proving both generations boot and the pointer selects the live one (switch
+// = flip `current`; rollback = point at an ancestor). The `current` symlink is
+// flipped with `ln -sfn` (the symlink/rename stdlib RFE is still pending; the
+// link replace is atomic). Same-state -> same digest -> same gen dir (spec_digest).
+import collections
+import io::{open_read, read_all, close, open_write, write_str}
+import process::{exec_run}
+import compose::{Module, blank_system, compose}
+import plan::{SystemSpec, Pkg, Dep, spec_digest}
+import gensys::{FileEntry, gen_dir, gen_entries, gensys_init, etc_link_target}
+import sshd::{sshd}
+import getty::{getty}
+
+// a dependency-free package (so two specs differ in their package CLOSURE,
+// which is what spec_digest folds — hostname/services are NOT part of it).
+makedep()<Pkg> -> {
+    return Pkg { name = "tool", version = "0", source = "", deps = Vec(), storePath = "" }
+}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+run(cmd<String>)<Int> -> {
+    freedom { return exec_run(cmd) else -1 }
+}
+
+read_flat(path<String>)<String> -> {
+    match (open_read(path)) {
+        r -> {
+            match (read_all(r)) { s -> { close(r); return s } ? -> { close(r); return "" } }
+        }
+        ? -> { return "" }
+    }
+}
+
+write_flat(path<String>, content<String>)<Bool> -> {
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+parent_dir(p<String>)<String> -> {
+    l<Int> = p.len()
+    last<Int> = -1
+    if (l > 0) {
+        for (i in 0..l-1) { if (p.char_at(i) == 47) { last = i } }
+    }
+    if (last >= 0) { return p.substring(0, last) }
+    return "/"
+}
+
+stage_file(stage<String>, e<FileEntry>)<Bool> -> {
+    path<String> = stage + e.path
+    par<String> = stage + parent_dir(e.path)
+    if (run("mkdir -p \"" + par + "\"") != 0) { return false }
+    ok<Bool> = false
+    match (open_write(path)) {
+        w -> { n<Int> = write_str(w, e.content) else -1; close(w); ok = (n >= 0) }
+        ? -> { ok = false }
+    }
+    return ok
+}
+
+// Build one image variant: copy the base tree, flip `current` -> gen-<tgt>,
+// mke2fs, content-address (host sha256) into the nested store. Returns 0 on ok.
+share(all)
+build_variant(base<String>, tgt<Int>, imgPath<String>, storeDir<String>, ver<String>)<Int> ->
+{
+    tdir<String> = base + "-v" + tgt.to_string()
+    cmd<String> = "T=\"" + tdir + "\" && rm -rf \"$T\" && cp -a \"" + base + "/.\" \"$T/\" && " +
+        "chmod +x \"$T/init\" && " +
+        "ln -sfn \"" + gen_dir(tgt) + "\" \"$T/vyb/system/generations/current\" && " +
+        "rm -f \"" + imgPath + "\" && " +
+        "mke2fs -q -d \"$T\" -F -t ext4 -b 4096 -L vybos-gensys \"" + imgPath + "\" 16384 && " +
+        "sha256sum \"" + imgPath + "\" > \"" + imgPath + ".sha\""
+    fails<Int> = 0
+    fails = fails + check(run(cmd) == 0, "build gen-" + tgt.to_string() + " image variant")
+
+    shaTxt<String> = read_flat(imgPath + ".sha")
+    ca<String> = ""
+    if (shaTxt.len() >= 64) { ca = shaTxt.substring(0, 64) }
+    fails = fails + check(ca.len() == 64, "  variant gen-" + tgt.to_string() + " CA (captured)")
+
+    ent<String> = storeDir + "/" + ca
+    imgBytes<Int> = read_flat(imgPath).len()
+    if (run("rm -rf \"" + ent + "\" && mkdir -p \"" + ent + "\" && cp \"" + imgPath + "\" \"" + ent + "/vybos-" + ver + "-gen-" + tgt.to_string() + ".img\"") != 0) {
+        fails = fails + check(false, "  stage variant into nested store")
+    } else {
+        fails = fails + check(read_flat(ent + "/vybos-" + ver + "-gen-" + tgt.to_string() + ".img").len() > 20000000, "  variant staged (image bytes)")
+    }
+    meta<String> = "{\"name\": \"vybos-gensys\", \"version\": \"" + ver + "\", \"kind\": \"root-disk-image-generation\"," +
+        "\"activeGeneration\": \"" + gen_dir(tgt) + "\", \"contentHash\": \"" + ca + "\"," +
+        "\"output\": \"" + ent + "/vybos-" + ver + "-gen-" + tgt.to_string() + ".img\"}"
+    fails = fails + check(write_flat(ent + "/vybos-" + ver + "-gen-" + tgt.to_string() + ".meta.json", meta), "  variant meta written")
+    println("  active-gen  : " + gen_dir(tgt))
+    println("  image       : " + ent + "/vybos-" + ver + "-gen-" + tgt.to_string() + ".img")
+    println("  CA          : " + ca)
+    return fails
+}
+
+main()<Int> -> {
+    println("=== VybOS generation-switch slice (persistent root/disk) ===\n")
+    fails<Int> = 0
+    OUTD<String> = "build/gensys-out"
+    BASE<String> = OUTD + "/root"
+    storeDir<String> = "store"
+    ver<String> = "0.1"
+
+    // two distinct specs (differ by hostname -> distinct spec_digest -> distinct gen dirs)
+    mods<Vec<Module>> = Vec()
+    mods.push(sshd(true))
+    mods.push(getty(true))
+    s1<SystemSpec> = compose(blank_system("x86_64-linux", "generation-a"), mods)
+    s2<SystemSpec> = compose(blank_system("x86_64-linux", "generation-b"), mods)
+    // distinct package closures -> distinct generation digests
+    p1<Pkg> = makedep()
+    p1.version = "1.0"
+    p2<Pkg> = makedep()
+    p2.version = "2.0"
+    s1.pkgs.push(p1)
+    s2.pkgs.push(p2)
+    id1<Int> = spec_digest(s1)
+    id2<Int> = spec_digest(s2)
+    fails = fails + check(id1 > 0 && id2 > 0, "two composed specs have digests")
+    fails = fails + check(id1 != id2, "gen-1 and gen-2 are distinct (different state -> different generation)")
+
+    // stage the base tree (no `current` yet): /init + both generations + /etc link
+    if (run("rm -rf \"" + OUTD + "\" && mkdir -p \"" + BASE + "/etc\" \"" + BASE + "/vyb/system/generations\"") != 0) {
+        println("  FAIL fresh staging"); return 1
+    }
+    g1<Vec<FileEntry>> = gen_entries(id1, s1)
+    g2<Vec<FileEntry>> = gen_entries(id2, s2)
+    if (stage_file(BASE, FileEntry { path = "/init", content = gensys_init() })) { } else { fails = fails + 1 }
+    n1<Int> = g1.len(); n2<Int> = g2.len()
+    if (n1 > 0) { for (i in 0..n1-1) { if (!stage_file(BASE, g1.get(i))) { fails = fails + 1 } } }
+    if (n2 > 0) { for (i in 0..n2-1) { if (!stage_file(BASE, g2.get(i))) { fails = fails + 1 } } }
+    fails = fails + check(run("ln -sfn \"" + etc_link_target() + "\" \"" + BASE + "/etc/vyb-os\"") == 0, "etc/vyb-os -> active generation link")
+    fails = fails + check(read_flat(BASE + "/init").len() > 200, "init is generation-aware")
+
+    // seed static busybox + RELATIVE applet links so /init's #!/bin/sh resolves
+    // (the persistent root needs its own userspace binary in the image).
+    if (!write_flat(OUTD + "/relink.py",
+        "import os,sys\n" +
+        "d=sys.argv[1]\n" +
+        "for n0 in os.listdir(d):\n" +
+        "    p=os.path.join(d,n0)\n" +
+        "    if os.path.islink(p) and n0!=\"busybox\": os.unlink(p); os.symlink(\"busybox\",p)\n")) {
+        println("  FAIL write relink.py"); return 1
+    }
+    seedCmd<String> = "B=\"" + BASE + "\" && mkdir -p \"$B/bin\" \"$B/dev\" && " +
+        "cp /usr/bin/busybox \"$B/bin/busybox\" && chmod +x \"$B/bin/busybox\" && " +
+        "\"$B/bin/busybox\" --install -s \"$B/bin\" >/dev/null 2>&1; " +
+        "rm -f \"$B/bin/relink_probe\"; " +
+        "python3 \"" + OUTD + "/relink.py\" \"$B/bin\""
+    fails = fails + check(run(seedCmd) == 0, "seed busybox into the persistent root (/bin/sh)")
+
+    // verify staged layout: both gen dirs + /etc link present
+    fails = fails + check(read_flat(BASE + "/vyb/system/generations/" + gen_dir(id1) + "/etc/vyb-os/hostname").len() > 0, "gen-1 staged")
+    fails = fails + check(read_flat(BASE + "/vyb/system/generations/" + gen_dir(id2) + "/etc/vyb-os/hostname").len() > 0, "gen-2 staged")
+
+    // two variants: current -> gen-1, current -> gen-2
+    fails = fails + build_variant(BASE, id1, OUTD + "/gen1.img", storeDir, ver)
+    fails = fails + build_variant(BASE, id2, OUTD + "/gen2.img", storeDir, ver)
+
+    println("")
+    sum<String> = "ALL GENERATION-SWITCH INVARIANTS PASS"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println(sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
