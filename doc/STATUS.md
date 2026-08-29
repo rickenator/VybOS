@@ -287,7 +287,9 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
 - **Module fn bodies are spliced into the importer**: the importer must import
   EVERY name a shared fn references (types + helpers), or "Unknown type
   identifier". Proven in build-exec/build-url-realize.
-- **Forward refs fail**: define a top-level fn before it's used.
+- **Forward references (functions + types) now supported** — since Vyb #211,
+  toolchain ≥ `e1d1125` (2026-08-28 sync). No define-before-use ordering
+  requirement any more.
 - **HTTPS**: `https_get_full_verified(host,port,path,"")` for real hosts
   (unverified variant can't resolve hostnames — issue #188).
 - **String registry / archive perf (since 2026-08-25 sync)**:

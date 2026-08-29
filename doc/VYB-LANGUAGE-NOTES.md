@@ -168,3 +168,4 @@ Confirmed language facts (parse/semantic, independent of bounds):
 ## Identifiers & expressions (verified 2026-08-28)
 - `from` and `bare` are RESERVED words in Vyb — never use them as function or parameter names (`Expected parameter declaration` / `is a reserved word`).
 - C-style ternary `cond ? a : b` is NOT supported (`Expected RPAREN but found QUESTION_MARK`) — use a small `Bool -> String` helper instead.
+- **Forward references are supported** (Vyb #211, toolchain >= `e1d1125`, verified 2026-08-28): a function or type may be used before its declaration in the same module — no define-before-use ordering requirement.
