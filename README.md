@@ -15,6 +15,21 @@ configuration — with the entire control framework written in JIT Vyb.
 
 PID 1 is Vyb.
 
+VybOS is being built as an aggressively Vyb-native Linux system. The kernel
+remains Linux and standard packages remain available, but the operating
+environment above that is intended to be Vyb wherever practical: system
+configuration is Vyb, PID 1 is Vyb, service and system-management logic is
+Vyb, and the build/configuration surface is Vyb. The same principle extends
+into compute: native Vyb implementations are being developed for CUDA/NVPTX
+GPU programming, SIMD, tensor operations, training, and inference. The goal
+is not to wrap Python, Rust, or another language and call it native. There is
+no Python or Rust runtime in the core design; foreign code is limited to
+deliberate FFI boundaries over POSIX, device APIs, and essential system
+libraries. In other words, Vyb is intended to span the system from
+configuration and process supervision through high-performance CPU/GPU compute
+and AI workloads, while Linux and established low-level libraries provide the
+hardware and standards substrate underneath it.
+
 The core idea: a system is not described to an interpreter, it is a **Vyb
 program** that the Vyb JIT compiles and runs to produce the machine's
 derivation graph, activation scripts, and immutable store. There is no separate
