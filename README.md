@@ -125,19 +125,19 @@ VybOS distro/package namespace.
 
 ## How To Run
 
-Paths below are godzilla-relative (`~/Projects`). On apex the compiler repo
-lives at `/usr/export/rick/Projects/Vyb` instead.
+Set the checkout paths for the machine where you run the commands. The VybOS
+toolchain and VybOS checkout may live anywhere.
 
 ```sh
 # Prerequisite: Vyb compiler JIT binary — use the ISOLATED vyb-os worktree
 # toolchain (stable snapshot; insulated from impl-agent churn on main):
-#   ~/Projects/Vyb-vybos  →  cmake --build build  →  build/vyb
+#   <VybOS toolchain checkout>  →  cmake --build build  →  build/vyb
 
-VYBU=/home/rick/Projects/Vyb-vybos    # the isolated worktree
+VYBU=<VybOS toolchain checkout>    # the isolated worktree
 export VYB_STDLIB=$VYBU/stdlib        # stable stdlib snapshot
 VYB=$VYBU/build/vyb
 
-cd ~/Projects/VybOS
+cd <VybOS checkout>
 COMMON="--module-path modules"
 
 # M0 — JIT-evaluate the machine declaration through the framework:
@@ -198,7 +198,7 @@ markers are `REPROBUILD:BINUTILS:PASS` / `REPROBUILD:GCC:PASS`.)
 ## Source Of Truth
 
 - Primary docs: this `README.md`, `GOAL.md`, `AGENTS.md`, `doc/`
-- Vyb compiler: `/usr/export/rick/Projects/Vyb` (lang refs in its
+- Vyb compiler: `<Vyb checkout>` (lang refs in its
   `docs/refman/PROGRAMMERS_GUIDE.md`)
 - Related projects: Vyb (the language)
 

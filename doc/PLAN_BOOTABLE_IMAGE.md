@@ -39,7 +39,7 @@ userspace. This roadmap's remaining phases (B5/B6 + own userspace) target that.
 
 ## 1. Boot target decision (the fork) — **LOCKED**
 
-**DECIDED (2026-08-25, Rick): Option B — container rootfs first.** Text below
+**DECIDED (2026-08-25): Option B — container rootfs first.** Text below
 records both options and why B was chosen; the decision is locked. (A QEMU
 kernel+initramfs self-boot — Option A's shape — was subsequently *also*
 demonstrated with the derived kernel, so both boot lines now run; B remains the
@@ -72,7 +72,7 @@ The single most consequential choice. Two viable first-boot targets:
 **Recommendation:** **Option B first**, keep Option A as the next-boot milestone.
 Both share the rootfs/config-materialization core, so B is not wasted work.
 
-✅ **DECIDED (2026-08-25): Option B (container rootfs) first.** Rick confirmed;
+✅ **DECIDED (2026-08-25): Option B (container rootfs) first.** the maintainer confirmed;
 this is the boot-target the rest of this roadmap and issue #1 build toward.
 
 ---
@@ -82,7 +82,7 @@ this is the boot-target the rest of this roadmap and issue #1 build toward.
 > Convention: `B<n>` boot phases. Items marked **[RFE]** need Vyb impl-agent
 > runtime support; everything else is VybOS-framework-side (vybey).
 
-### B0 — Decide + scaffold boot target (Rick's call; issue #3 resolution)
+### B0 — Decide + scaffold boot target (maintainer decision; issue #3 resolution)
 - Decide A vs B (recommend B first).
 - Define the **bootable artifact contract**: what `build/*` produces
   (`rootfs/` dir, rootfs tarball, then later a disk image), where, and how
@@ -167,7 +167,7 @@ this is the boot-target the rest of this roadmap and issue #1 build toward.
 ## 3. Dependency graph (as-built 2026-08-26 — tracked phases done)
 
 ```
-B0 (decide boot target, Rick)                 ✅ LOCKED: Option B
+B0 (decide boot target)                       ✅ LOCKED: Option B
   └─ B1 rootfs layout+config    ✅ LANDED   (needs: mkdir → stdlib now has it)
        └─ B2 real hashing        ✅ DONE    (needs: SHA-256 → stdlib; 256-bit nested store)
        └─ B3 init+userspace      ⏳ lite     (needs: "ready" marker  → VYBOS_READY reached)
@@ -203,7 +203,7 @@ A **first bootable VybOS image** milestone is reached when all of:
 
 ---
 
-## 5. Open questions (Rick)
+## 5. Open questions
 
 1. ~~**Boot target:** Option B vs Option A?~~ — **DECIDED 2026-08-25: Option B**
    (container rootfs first). A QEMU kernel+initramfs self-boot was subsequently
@@ -226,6 +226,6 @@ A **first bootable VybOS image** milestone is reached when all of:
 ## 6. Deliverables
 
 - This roadmap (done).
-- After Rick answers §5: B0/B1 executable groundwork (rootfs layout + launcher
+- After the remaining decisions in §5 are resolved: B0/B1 executable groundwork (rootfs layout + launcher
   stand-in validation) with the docs, committing framework-side pieces as they
   land, and reporting honestly what is real-bootable vs stand-in.

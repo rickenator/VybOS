@@ -68,8 +68,8 @@ transition pipeline via `build/build-apply.vyb` (compose → gate → `spec_dige
 package's own source → content-address → store).
 
 **Toolchain isolation (2026-08-24)**: VybOS builds/runs against an **isolated Vyb
-worktree** — `~/Projects/Vyb-vybos` (branch `vyb-os-stable`) — created via
-`git -C ~/Projects/Vyb worktree add -b vyb-os-stable ~/Projects/Vyb-vybos`,
+worktree** — `<VybOS toolchain checkout>` (branch `vyb-os-stable`) — created via
+`git -C <Vyb checkout> worktree add -b vyb-os-stable <VybOS toolchain checkout>`,
 insulating VybOS from impl-agent churn on the main checkout.
 
 **Build-stage derivations → full derived boot chain (2026-08-25→26)** — the 0.1

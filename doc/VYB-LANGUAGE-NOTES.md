@@ -1,7 +1,7 @@
 # Vyb language notes (verified for VybOS authoring)
 
 Every item below was hit and verified while building VybOS M0 against
-`/usr/export/rick/Projects/Vyb` (`build/vyb`, JIT on by default). They are the
+`<Vyb checkout>` (`build/vyb`, JIT on by default). They are the
 sharp edges a VybOS author trips on when writing cross-module vybey. Recheck
 against the compiler if a later version claims a fix.
 

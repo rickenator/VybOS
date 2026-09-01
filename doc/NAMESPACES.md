@@ -6,9 +6,9 @@
 
 - `rickenator/Vyb` is public and remains the upstream compiler/language source
   repo.
-- `rickenator/VybOS` is private for now. That is intentional while Rick is
-  still carrying the language implementation, OS framework, and early package
-  design work at the same time.
+- `rickenator/VybOS` is private for now. That is intentional while the language
+  implementation, OS framework, and early package design work remain in active
+  development.
 - Do not assume public end-user repos exist yet for either VybOS or VybLang.
 
 ## Intended Future Split
@@ -43,7 +43,7 @@ rickenator/Vyb commit
     -> VybOS packages/builds run with that SDK
 ```
 
-For now, the local `~/Projects/Vyb-vybos` isolated worktree fills the role that
+For now, the local `<VybOS toolchain checkout>` isolated worktree fills the role that
 a future pinned VybLang SDK release should occupy.
 
 ## Naming Guidance
@@ -55,4 +55,3 @@ a future pinned VybLang SDK release should occupy.
 - Avoid naming a future downstream SDK repo `VybLang/Vyb` if `rickenator/Vyb`
   remains the upstream compiler repo; prefer names like `VybLang/sdk`,
   `VybLang/releases`, or `VybLang/VybLang` to avoid source-of-truth ambiguity.
-

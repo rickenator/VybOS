@@ -7,10 +7,10 @@
 
 Forward this whole file to the Vyb implementation agent. Every item is
 self-contained: goal, verified current state (exact file:line), numbered
-requirements, acceptance line. Companion project: `~/Projects/VybOS`
+requirements, acceptance line. Companion project: `<VybOS checkout>`
 (NixOS-style distro whose build/config framework is written in JIT Vyb).
 
-Verified build: `build/vyb` at `/usr/export/rick/Projects/Vyb`, JIT default,
+Verified build: `build/vyb` at `<Vyb checkout>`, JIT default,
 stdlib modules present: `agents asyncs channels collections core curses env
 http https io network process qt rand regex tasks term threads time tls utf8`.
 

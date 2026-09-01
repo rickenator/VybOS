@@ -353,8 +353,8 @@ met by construction).
 `build/vyb`. Command:
 
 ```sh
-env VYB_STDLIB=/usr/export/rick/Projects/Vyb/stdlib \
-    /usr/export/rick/Projects/Vyb/build/vyb build/proto-plan.vyb --module-path modules
+env VYB_STDLIB=<Vyb checkout>/stdlib \
+    <Vyb checkout>/build/vyb build/proto-plan.vyb --module-path modules
 ```
 
 **Result: 27/27 invariants PASS (exit 0).** Proven on the real compiler:

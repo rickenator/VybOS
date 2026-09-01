@@ -9,7 +9,7 @@
 VybOS uses an **isolated Vyb worktree**, not the main Vyb checkout:
 
 ```sh
-VYBU=~/Projects/Vyb-vybos          # branch vyb-os-stable
+VYBU=<VybOS toolchain checkout>          # branch vyb-os-stable
 VYB_STDLIB=$VYBU/stdlib
 VYB=$VYBU/build/vyb
 # update the toolchain to Vyb's latest COMMITTED+PUSHED main:
@@ -19,7 +19,7 @@ cd $VYBU && cmake --build build
 ```
 
 - **vyb-os-stable tracks `origin/main` ONLY when Vyb main is committed AND
-  pushed** (never the local `~/Projects/Vyb` checkout, which can carry
+  pushed** (never the local `<Vyb checkout>` checkout, which can carry
   uncommitted or committed-but-unpushed impl-agent churn). Enforced by
   `build/sync-os-toolchain.sh`: fetches the remote, fast-forwards
   `vyb-os-stable` to `origin/main` + rebuilds `build/vyb` only when new
@@ -32,7 +32,7 @@ cd $VYBU && cmake --build build
 
 Run a VybOS slice:
 ```sh
-cd ~/Projects/VybOS
+cd <VybOS checkout>
 $VYB build/build-compose.vyb --module-path modules     # composition, offline
 $VYB build/build-apply.vyb    --module-path modules    # apply dry-run, offline
 $VYB build/build-exec.vyb     --module-path modules    # execute plan, needs httpbin
@@ -251,7 +251,7 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
       `build/generations.vyb` so a module-composed switch is recorded as a
       generation with rollback (needs `rename`/`symlink` RFE for the atomic
       profile flip).
-- [x] **Boot target decision** (needs Rick): kernel+initramfs on QEMU vs
+- [x] **Boot target decision** (needs a maintainer decision): kernel+initramfs on QEMU vs
       container rootfs first. **DECIDED 2026-08-25: Option B — container rootfs
       first** (see `doc/PLAN_BOOTABLE_IMAGE.md`). Both halves now boot to READY:
       container-rootfs via `tools/vybos-run --test` (bwrap/docker) AND a real
@@ -309,5 +309,5 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
 - `README.md`, `GOAL.md`, `AGENTS.md`, `doc/` (RTD: `doc/COMPOSITION.md`,
   `doc/ARCHITECTURE.md`, `doc/STORE-LAYOUT.md`, `doc/VYB-LANGUAGE-NOTES.md`,
   `doc/RFE-M2.md`, `doc/POSITIONING.md`).
-- Vyb semantics: `~/Projects/Vyb-vybos` stdlib + the compiler repo's
+- Vyb semantics: `<VybOS toolchain checkout>` stdlib + the compiler repo's
   `docs/refman/PROGRAMMERS_GUIDE.md`.
