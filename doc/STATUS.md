@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-08-26 (deepest: INDEPENDENT-BUILD REPROBUILD proofs for binutils + the gcc tower; BYTE-DETERMINISTIC kernel; full 256-bit hex NESTED store (flat cleared); all derived from source)
+> last_updated: 2026-09-03 (service OPTIONS — port + args — deepened into plan.Service, dogfooded in sshd/nginx, end-to-end to services.sh/init; Vyb#215 serializer bug found + worked around via bool-first field order)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -226,6 +226,17 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
   SHA-256) landed in the stdlib (`fs::mkdir` + 256-bit content hash in use);
   Items 3–4 are carried framework-side (`archive` extract + `modules/url.vyb`).
   Closed once the tracked primitives landed.
+- **#215 (filed 2026-09-03)** — `to_string()` (the JSON-style serializer)
+  mis-encodes any `Int` field that follows a `Bool` field at index ≥ 1 in a
+  struct: in-memory field reads are correct, but the serialized value is raw
+  garbage (~`value * 2^32 + stray bytes`). The serializer's per-field offset
+  walk treats a non-leading `Bool` as zero-size, shifting later reads; a
+  leading `Bool` (`{Bool, String, Int, ...}`) serializes cleanly. Found while
+  adding `port<Int>` after `enabled<Bool>` in `plan.Service` (service options,
+  M3 deepening). VybOS workaround: `Service` declares `enabled` FIRST
+  (regression probe: `build/build-compose.vyb` invariant 9; repro/workaround
+  probes `build/probe-bool-matrix.vyb` / `build/probe-bool-first.vyb`). Do not
+  reorder `Service`'s fields until the fix lands.
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
@@ -258,9 +269,21 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
       QEMU kernel+initramfs self-boot via `--runtime qemu --test` (B4 early
       demo). Remaining for a full bootable image: root/disk image (B5),
       bootloader, gen-switch, and VybOS's own (non-stand-in) userspace.
-- [ ] **Module-system deepening**: service options (port, args) beyond
-      `enabled`; `select`-validated dep kinds; possibly an `options`-style
-      carrier struct per module.
+- [x] **Module-system deepening**: service options (port, args) beyond
+      `enabled` — landed 2026-09-03. `plan.Service` now carries
+      `port<Int>` (0 = none) + `args<Vec<String>>` (extra argv), with
+      `compose.mk_service_opts(name, command, port, args)` as the options
+      constructor (`mk_service` = the no-options wrapper). Dogfooded: sshd
+      (port 22), nginx (port 80 + `-g "daemon off;"`). The options flow
+      end-to-end into the machine contract (`spec.to_string()`), the
+      `config/system.vyb` listing, the generated `services.sh` activator
+      (runs command + args), and the init banner (`port=N`). Invariants:
+      `build/build-compose.vyb` §7–9 (port/args ride the fold; options
+      round-trip the spec JSON). GOTCHA: `Service` declares `enabled<Bool>`
+      FIRST — Vyb toolchain bug rickenator/Vyb#215 corrupts any Int field
+      serialized after a Bool field at index ≥ 1 (in-mem reads fine, JSON
+      garbage); bool-first is the verified workaround (see
+      doc/COMPOSITION.md "Service options", probes `build/probe-bool-*.vyb`).
 - [x] **Build-stage derivations → kernels-from-source + determinism** (see
       doc/PLAN-BUILD-DERIVATIONS.md): landed in sequence — hello-vyb
       (byte-reproducible), busybox 1.36.1 (real fetched source → built ELF), a

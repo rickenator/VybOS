@@ -130,6 +130,8 @@ main()<Int> -> {
     shRaw<String> = read_flat(stage + "/etc/vyb-os/services.sh")
     fails = fails + check(substr_has(shRaw, "sshd)"), "services.sh has an enabled-service launcher")
     fails = fails + check(substr_has(shRaw, "# === VybOS services ===\n"), "services.sh header present")
+    // service options flow to the activator: nginx's declared argv lands in the launcher
+    fails = fails + check(substr_has(shRaw, "-g daemon off;"), "nginx argv (daemon off;) is in services.sh")
 
     println("")
     println("  staged " + staged.to_string() + " files into: " + stage + "/")

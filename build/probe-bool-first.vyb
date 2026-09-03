@@ -1,0 +1,38 @@
+// probe-bool-first.vyb — Vyb#215 workaround PROBE (rickenator/Vyb issue 215).
+//
+// The toolchain's to_string() mis-encodes an Int field that follows a Bool
+// field at index >= 1 (offset-walk treats the Bool as zero-size; in-memory
+// reads are fine). This file PINS the workaround: with `enabled<Bool>` FIRST,
+// a struct shaped exactly like plan.Service serializes cleanly.
+//
+// Run:  $VYB build/probe-bool-first.vyb --module-path modules
+// Expect: in-mem 22 80; JSON "port": 22 / "port": 80 (the bm/ layout block
+//         shows the corrupted values for contrast — that is the bug, not a
+//         failure of this file). Do not "fix" the bm/ block to match.
+import collections
+import plan::{SystemSpec, Pkg, Service, Dep}
+
+share(all)
+struct BF { enabled<Bool>, name<String>, port<Int>, args<Vec<String>> }  // Bool FIRST
+share(all)
+struct BM { name<String>, command<String>, enabled<Bool>, port<Int>, args<Vec<String>> }  // current layout
+share(all)
+struct W {
+    system<String>, hostname<String>,
+    pkgs<Vec<Pkg>>, services<Vec<Service>>,
+    bf<Vec<BF>>, bm<Vec<BM>>
+}
+
+main()<Int> -> {
+    bf<Vec<BF>> = Vec()
+    bf.push(BF { enabled = true, name = "sshd", port = 22, args = Vec() })
+    bf.push(BF { enabled = true, name = "nginx", port = 80, args = Vec() })
+    bm<Vec<BM>> = Vec()
+    bm.push(BM { name = "sshd", command = "/a", enabled = true, port = 22, args = Vec() })
+    bm.push(BM { name = "nginx", command = "/b", enabled = true, port = 80, args = Vec() })
+    w<W> = W { system = "x", hostname = "h", pkgs = Vec(), services = Vec(), bf = bf, bm = bm }
+    println("in-mem bf: " + bf.get(0).port.to_string() + " " + bf.get(1).port.to_string())
+    println("in-mem bm: " + bm.get(0).port.to_string() + " " + bm.get(1).port.to_string())
+    println("json: " + w.to_string())
+    return 0
+}

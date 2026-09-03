@@ -15,8 +15,18 @@ share(all)
 struct Dep { name<String>, kind<String> }
 share(all)
 struct Pkg { name<String>, version<String>, source<String>, deps<Vec<Dep>>, storePath<String> }
+// `enabled` toggles activation; `port` is the listening port (0 = none/unspecified);
+// `args` are extra argv the activator appends after `command`. Options deepen the
+// module contribution beyond a bare on/off (doc/COMPOSITION.md).
+//
+// FIELD ORDER: `enabled<Bool>` is FIRST on purpose. Vyb toolchain bug
+// rickenator/Vyb#215 makes to_string() mis-read any Int field that follows a
+// Bool field at index >= 1 (the serializer's offset walk treats the Bool as
+// zero-size, shifting later field reads; direct field access is unaffected).
+// Bool-first serializes cleanly (verified by build/probe-bool-first.vyb);
+// keep it there until the compiler fix lands.
 share(all)
-struct Service { name<String>, command<String>, enabled<Bool> }
+struct Service { enabled<Bool>, name<String>, command<String>, port<Int>, args<Vec<String>> }
 share(all)
 struct SystemSpec { system<String>, hostname<String>, pkgs<Vec<Pkg>>, services<Vec<Service>> }
 share(all)

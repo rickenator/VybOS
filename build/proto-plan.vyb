@@ -35,7 +35,7 @@ main()<Int> -> {
     a.pkgs.push(deriv("gzip", "1.0", "gz1.tar.gz", libNames))
     a.pkgs.push(deriv("zlib", "1.3", "z.tar.gz", noNames))
     a.pkgs.push(deriv("vyb", "0", "vyb.tar.gz", noNames))
-    a.services.push(Service { name = "ssh", command = "sshd", enabled = true })
+    a.services.push(Service { enabled = true, name = "ssh", command = "sshd", port = 22, args = Vec() })
 
     // Config B: gzip 2.0, zlib, openssl (dep zlib), vyb; ssh disabled
     b<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera-b", pkgs = Vec(), services = Vec() }
@@ -43,7 +43,7 @@ main()<Int> -> {
     b.pkgs.push(deriv("zlib", "1.3", "z.tar.gz", noNames))
     b.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", libNames))
     b.pkgs.push(deriv("vyb", "0", "vyb.tar.gz", noNames))
-    b.services.push(Service { name = "ssh", command = "sshd", enabled = false })
+    b.services.push(Service { enabled = false, name = "ssh", command = "sshd", port = 22, args = Vec() })
 
     // Config C: only zlib ticked 1.3 -> 1.4
     cSpec<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera-c", pkgs = Vec(), services = Vec() }
@@ -51,7 +51,7 @@ main()<Int> -> {
     cSpec.pkgs.push(deriv("zlib", "1.4", "z.tar.gz", noNames))
     cSpec.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", libNames))
     cSpec.pkgs.push(deriv("vyb", "0", "vyb.tar.gz", noNames))
-    cSpec.services.push(Service { name = "ssh", command = "sshd", enabled = false })
+    cSpec.services.push(Service { enabled = false, name = "ssh", command = "sshd", port = 22, args = Vec() })
 
     // B2: identical packages, different hostname (prose/metadata NOT part of identity)
     b2<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "anything-else", pkgs = Vec(), services = Vec() }
@@ -59,7 +59,7 @@ main()<Int> -> {
     b2.pkgs.push(deriv("zlib", "1.3", "z.tar.gz", noNames))
     b2.pkgs.push(deriv("openssl", "3.1", "os.tar.gz", libNames))
     b2.pkgs.push(deriv("vyb", "0", "vyb.tar.gz", noNames))
-    b2.services.push(Service { name = "ssh", command = "sshd", enabled = false })
+    b2.services.push(Service { enabled = false, name = "ssh", command = "sshd", port = 22, args = Vec() })
 
     empty<SystemSpec> = SystemSpec { system = "", hostname = "", pkgs = Vec(), services = Vec() }
 

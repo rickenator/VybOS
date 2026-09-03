@@ -102,12 +102,42 @@ println(spec.to_string())            // clean nested JSON (the machine contract)
 | `empty_module() -> Module` | identity contribution ("disabled") |
 | `dep(name, kind) -> Dep` | typed dependency edge |
 | `mk_pkg(name, version, source, deps) -> Pkg` | content-addressed package |
-| `mk_service(name, command) -> Service` | enabled service entry |
+| `mk_service(name, command) -> Service` | enabled service entry (no options) |
+| `mk_service_opts(name, command, port, args) -> Service` | enabled service WITH options (M3 deepening) |
 | `with_pkg(m, p) -> Module` / `with_service(m, s) -> Module` | pure appenders |
 | `blank_system(system, hostname) -> SystemSpec` | empty base to compose onto |
 | `compose(base, mods) -> SystemSpec` | fold modules (pure, ordered) |
 | `compose_issue(spec) -> String` | validation gate ("" = clean) |
 | `pkg_index` / `service_index` | lookup helpers |
+
+## Service options (M3 deepening)
+
+A `Service` is no longer a bare on/off switch: it carries **`port<Int>`**
+(the declared listening port, `0` = none) and **`args<Vec<String>>`** (extra
+argv the activator appends after `command`). Modules opt in via
+`mk_service_opts` — the plain `mk_service` is now a thin wrapper over it with
+`port=0`, `args=[]`.
+
+```vyb
+// modules/nginx.vyb — declares port 80 + foreground argv
+ngArgs<Vec<String>> = Vec()
+ngArgs.push("-g"); ngArgs.push("daemon off;")
+m = with_service(m, mk_service_opts("nginx", "/run/current-system/sw/sbin/nginx", 80, ngArgs))
+```
+
+The options flow end-to-end: the composed spec (visible in `system.json` and
+`spec.to_string()`), the human-readable listing in `config/system.vyb`, the
+generated `/etc/vyb-os/services.sh` activator (which runs `command` + `args`),
+and the init banner (`nginx port=80`). `port` is supervisor metadata — it is
+*not* part of the argv.
+
+**Field-order caveat (Vyb#215):** `plan.Service` declares `enabled<Bool>`
+FIRST. A Vyb toolchain bug (rickenator/Vyb#215) makes `to_string()` emit
+garbage for any `Int` field that follows a `Bool` field at index ≥ 1;
+bool-first serializes cleanly. Do not reorder the fields until the compiler
+fix lands (regression probe: `build/build-compose.vyb` invariant 9,
+repro/workaround probes `build/probe-bool-matrix.vyb` /
+`build/probe-bool-first.vyb`).
 
 ## Status / next
 

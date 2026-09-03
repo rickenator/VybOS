@@ -44,7 +44,15 @@ main()<Int> -> {
     println("services (" + spec.services.len().to_string() + "):")
     svcs<Vec<Service>> = spec.services
     for (s in svcs) {
-        println("  [" + s.enabled.to_string() + "] " + s.name + " :: " + s.command)
+        line<String> = "  [" + s.enabled.to_string() + "] " + s.name + " :: " + s.command
+        if (s.port > 0) { line = line + "  (port " + s.port.to_string() + ")" }
+        ak<Int> = s.args.len()
+        if (ak > 0) {
+            al<String> = "  (args "
+            for (i in 0..ak-1) { if (i > 0) { al = al + " " }; al = al + s.args.get(i) }
+            line = line + al + ")"
+        }
+        println(line)
     }
 
     println("")

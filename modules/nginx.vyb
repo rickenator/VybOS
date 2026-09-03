@@ -6,14 +6,21 @@
 // composition convention: takes its own options, returns an empty Module when
 // `enabled` is false.
 import collections
-import compose::{Module, empty_module, mk_pkg, mk_service, with_pkg, with_service}
+import compose::{Module, empty_module, mk_pkg, mk_service_opts, with_pkg, with_service}
 
 share(all)
 nginx(enabled<Bool>)<Module> -> {
     m<Module> = empty_module()
     if (enabled) {
         m = with_pkg(m, mk_pkg("nginx", "1.26.2", "https://nginx.org/download/nginx-1.26.2.tar.gz", Vec()))
-        m = with_service(m, mk_service("nginx", "/run/current-system/sw/sbin/nginx"))
+        // Service OPTIONS beyond on/off (doc/COMPOSITION.md): declare the
+        // listening port, and the `-g "daemon off;"` argv so the activator
+        // runs nginx in the foreground (the NixOS `path`/`environment` feel,
+        // carried into a plain Service field).
+        ngArgs<Vec<String>> = Vec()
+        ngArgs.push("-g")
+        ngArgs.push("daemon off;")
+        m = with_service(m, mk_service_opts("nginx", "/run/current-system/sw/sbin/nginx", 80, ngArgs))
     }
     return m
 }

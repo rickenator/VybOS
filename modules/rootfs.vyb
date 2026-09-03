@@ -38,6 +38,29 @@ header(name<String>)<String> -> {
     return "# === VybOS " + name + " ===\n"
 }
 
+// The full, shell-ready argv for one service: its `command` followed by the
+// declared extra `args`, space-joined. This is exactly what the activator
+// runs — so a module's service options (doc/COMPOSITION.md) flow straight
+// into the booted rootfs instead of stopping at the spec. (`port` is
+// supervisor metadata, not part of the argv.)
+share(all)
+svc_argv(s<Service>)<String> -> {
+    a<String> = s.command
+    args<Vec<String>> = s.args
+    k<Int> = args.len()
+    if (k > 0) {
+        for (i in 0..k-1) { a = a + " " + args.get(i) }
+    }
+    return a
+}
+
+// the `port=N` marker for an init banner ("" when no port is declared).
+share(all)
+port_tag(sv<Service>)<String> -> {
+    if (sv.port > 0) { return " port=" + sv.port.to_string() }
+    return ""
+}
+
 // Bootable init for the container rootfs (stand-in BusyBox userspace). Prints a
 // hostname/version/system/service summary driven by the COMPOSED spec (not
 // hand-rolled), then a `VYBOS_READY=1` marker line that the launcher's --test
@@ -57,7 +80,7 @@ init_script(spec<SystemSpec>)<String> -> {
         for (i in 0..n-1) {
             sv<Service> = svcs.get(i)
             if (sv.enabled) {
-                s = s + "echo \"  " + sv.name + ": starting... " + sv.name + " (started)\"\n"
+                s = s + "echo \"  " + sv.name + ": starting... " + sv.name + port_tag(sv) + " (started)\"\n"
             }
         }
     }
@@ -82,7 +105,8 @@ rootfs_files(spec<SystemSpec>)<Vec<FileEntry>> -> {
         for (i in 0..n-1) {
             s<Service> = svcs.get(i)
             if (s.enabled) {
-                sh = sh + s.name + ") { echo \"" + s.name + " (started)\"; " + s.command + " ; }\n"
+                // the activator runs the FULL declared argv (command + args)
+                sh = sh + s.name + ") { echo \"" + s.name + " (started)\"; " + svc_argv(s) + " ; }\n"
             }
         }
     }

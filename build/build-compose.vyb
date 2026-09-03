@@ -10,12 +10,13 @@
 //   5. empty/invalid compositions report cleanly.
 // Mirrors the check()/exit-code style of build-url.vyb.
 import collections
-import compose::{Module, empty_module, mk_pkg, mk_service, with_pkg, with_service,
+import compose::{Module, empty_module, mk_pkg, mk_service, mk_service_opts, with_pkg, with_service,
                  dep, blank_system, compose, compose_issue, pkg_index, service_index}
 import plan::{SystemSpec, Pkg, Service}
 import sshd::{sshd}
 import getty::{getty}
 import vim::{vim}
+import nginx::{nginx}
 
 check(cond<Bool>, label<String>)<Int> -> {
     if (!cond) { println("  FAIL " + label); return 1 }
@@ -101,6 +102,35 @@ main()<Int> -> {
     dsoff.services.get(1).enabled = false
     fails = fails + check(compose_issue(dsoff) == "",
                           "disabled service is not a duplicate conflict")
+
+    // 7. service OPTIONS (port, args) ride the contribution through the fold.
+    //    The sshd module declares its listening port; the nginx module
+    //    declares port 80 AND extra argv ("daemon off;").
+    fails = fails + check(svcs.get(0).port == 22, "sshd module declares port 22")
+    fails = fails + check(svcs.get(0).args.len() == 0, "sshd declares no extra argv")
+
+    ngMods<Vec<Module>> = Vec()
+    ngMods.push(nginx(true))
+    ngSpec<SystemSpec> = compose(blank_system("x86_64-linux", "h6"), ngMods)
+    fails = fails + check(compose_issue(ngSpec) == "", "nginx-only spec is clean")
+    ngSvc<Service> = ngSpec.services.get(0)
+    fails = fails + check(ngSvc.port == 80, "nginx module declares port 80")
+    fails = fails + check(ngSvc.args.len() == 2, "nginx declares two argv tokens")
+    fails = fails + check(ngSvc.args.get(0) == "-g" && ngSvc.args.get(1) == "daemon off;",
+                          "nginx argv is the foreground flag (-g \"daemon off;\")")
+
+    // 8. mk_service_opts round-trips its inputs (constructor kit, not literals).
+    so<Service> = mk_service_opts("web", "/run/current-system/sw/sbin/webd", 443, ngSvc.args)
+    fails = fails + check(so.port == 443 && so.enabled, "mk_service_opts sets port + enabled")
+    fails = fails + check(so.args.get(1) == "daemon off;", "mk_service_opts copies the args Vec")
+
+    // 9. the machine contract (spec.to_string()) round-trips the Int fields.
+    //    Regression for the Vyb toolchain bug where an Int field following a
+    //    Bool field (index >= 1) serialized as raw garbage — Service keeps
+    //    `enabled` FIRST as the workaround (see modules/plan.vyb).
+    specJson<String> = spec.to_string()
+    fails = fails + check(substr_has(specJson, "\"port\": 22"), "service port survives spec JSON")
+    fails = fails + check(substr_has(specJson, "\"enabled\": true"), "service enabled survives spec JSON")
 
     println("")
     println("--- composed SystemSpec JSON ---")

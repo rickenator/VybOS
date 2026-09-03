@@ -5,14 +5,15 @@
 // contribution. When `enabled` is false it returns the EMPTY module, so
 // toggling the whole module off is a one-line call-site edit.
 import collections
-import compose::{Module, empty_module, mk_pkg, mk_service, with_pkg, with_service}
+import compose::{Module, empty_module, mk_pkg, mk_service_opts, with_pkg, with_service}
 
 share(all)
 sshd(enabled<Bool>)<Module> -> {
     m<Module> = empty_module()
     if (enabled) {
         m = with_pkg(m, mk_pkg("openssh", "9.8", "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-9.8p1.tar.gz", Vec()))
-        m = with_service(m, mk_service("sshd", "/run/current-system/sw/sbin/sshd"))
+        // Declares the listening port (22); no extra argv.
+        m = with_service(m, mk_service_opts("sshd", "/run/current-system/sw/sbin/sshd", 22, Vec()))
     }
     return m
 }

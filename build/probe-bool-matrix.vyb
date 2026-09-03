@@ -1,0 +1,45 @@
+// probe-bool-matrix.vyb — Vyb#215 repro PROBE (rickenator/Vyb issue 215).
+//
+// Pins the bug's trigger shape: a Bool field at index >= 1 (here t3/t4) with
+// a subsequent Int field corrupts BOTH the in-memory read and the JSON
+// (offset-walk treats the Bool as zero-size). t1/t2 (Bool at index 0 / no
+// following Int) stay clean.
+//
+// Run:  $VYB build/probe-bool-matrix.vyb --module-path modules
+// Expect (with the bug present): in-mem line "1 2 3"-style for t3/t4 is
+// GARBAGE and their JSON values are large; t1/t2 clean. Once the toolchain
+// fix lands, t3/t4 should read 22/80 in both columns — keep this file until
+// it passes cleanly (then it becomes the regression proof and can be retired
+// with a note).
+import collections
+import plan::{SystemSpec, Pkg, Service, Dep}
+
+share(all)
+struct T1 { a<String>, b<Bool> }                    // str, bool  (no Int)
+share(all)
+struct T2 { a<String>, b<Bool>, c<String> }         // str, bool, str
+share(all)
+struct T3 { a<Int>, b<Bool>, c<Int> }               // int, bool, int
+share(all)
+struct T4 { a<String>, b<Bool>, c<Int>, d<Int> }   // str, bool, int, int
+share(all)
+struct W {
+    system<String>, hostname<String>,
+    pkgs<Vec<Pkg>>, services<Vec<Service>>,
+    t1<Vec<T1>>, t2<Vec<T2>>, t3<Vec<T3>>, t4<Vec<T4>>
+}
+
+main()<Int> -> {
+    t1<Vec<T1>> = Vec()
+    t1.push(T1 { a = "x", b = true })
+    t2<Vec<T2>> = Vec()
+    t2.push(T2 { a = "x", b = true, c = "y" })
+    t3<Vec<T3>> = Vec()
+    t3.push(T3 { a = 1, b = true, c = 22 })
+    t4<Vec<T4>> = Vec()
+    t4.push(T4 { a = "x", b = true, c = 22, d = 80 })
+    w<W> = W { system = "x", hostname = "h", pkgs = Vec(), services = Vec(), t1 = t1, t2 = t2, t3 = t3, t4 = t4 }
+    println("in-mem: " + t3.get(0).c.to_string() + " " + t4.get(0).c.to_string() + " " + t4.get(0).d.to_string())
+    println("json: " + w.to_string())
+    return 0
+}

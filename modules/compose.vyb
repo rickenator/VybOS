@@ -63,7 +63,16 @@ mk_pkg(name<String>, version<String>, source<String>, deps<Vec<Dep>>)<Pkg> -> {
 // Construct an enabled Service entry.
 share(all)
 mk_service(name<String>, command<String>)<Service> -> {
-    return Service { name = name, command = command, enabled = true }
+    return mk_service_opts(name, command, 0, Vec())
+}
+
+// Construct an enabled Service entry WITH options (port, args) beyond
+// `enabled` — the M3 "service options" deepening (doc/COMPOSITION.md).
+// `port` 0 = no declared listening port; `args` are extra argv the activator
+// appends after `command`.
+share(all)
+mk_service_opts(name<String>, command<String>, port<Int>, args<Vec<String>>)<Service> -> {
+    return Service { enabled = true, name = name, command = command, port = port, args = args }
 }
 
 // Pure appenders: return a NEW Module with one pkg/service added. The input
