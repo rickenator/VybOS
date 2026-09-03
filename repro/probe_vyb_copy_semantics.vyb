@@ -1,0 +1,31 @@
+// probe_vyb_copy_semantics.vyb — does struct-copy deep-copy Vec fields (so a
+// pure take/return API on nested Vecs doesn't alias the input)?
+struct Tx { sender<String>, amount<Int> }
+struct Block { id<Int>, txs<Vec<Tx>> }
+struct Chain { blocks<Vec<Block>> }
+
+main()<Int> -> {
+    txs<Vec<Tx>> = Vec()
+    txs.push(Tx { sender = "a", amount = 5 })
+    b<Block> = Block { id = 1, txs = txs }
+    bs<Vec<Block>> = Vec()
+    bs.push(b)
+    orig<Chain> = Chain { blocks = bs }
+
+    // copy-on-struct: push into the copy's nested Vec; original must be untouched
+    ch<Chain> = orig
+    blk<Vec<Block>> = ch.blocks
+    bl<Block> = blk.get(0)
+    bl.txs.push(Tx { sender = "b", amount = 3 })
+    ch.blocks.set(0, bl)
+
+    o1<Int> = orig.blocks.get(0).txs.len()
+    n1<Int> = ch.blocks.get(0).txs.len()
+    ok1<Bool> = (o1 == 1 && n1 == 2)
+    println("COPY1 " + if (ok1) { "OK orig=1 new=2" } else { "ALIAS o=" + o1.to_string() + " n=" + n1.to_string() })
+
+    // and the other direction: original after the fact
+    o2<Int> = orig.blocks.get(0).txs.get(0).amount
+    println("COPY2 " + (orig.blocks.get(0).txs.get(0).sender) + "/" + o2.to_string())
+    return 0
+}

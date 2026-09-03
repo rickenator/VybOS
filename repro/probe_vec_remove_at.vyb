@@ -1,0 +1,14 @@
+// probe_vec_remove_at.vyb — does the built-in Vec.remove_at work on the
+// VybOS toolchain (Vyb-vybos)? If yes, no stdlib RFE is needed.
+main()<Int> -> {
+    v<Vec<Int>> = Vec()
+    v.push(10); v.push(20); v.push(30); v.push(40)
+    m<Int> = v.len()
+    v.remove_at(1)          // drop the 20
+    n<Int> = v.len()
+    // expect [10,30,40]
+    a<Int> = v.get(0); b<Int> = v.get(1); c<Int> = v.get(2)
+    ok<Bool> = (a == 10 && b == 30 && c == 40 && n == 3)
+    println("REMOVE_AT " + if (ok) { "OK m=" + m.to_string() + " n=" + n.to_string() } else { "FAIL a=" + a.to_string() + " b=" + b.to_string() + " c=" + c.to_string() })
+    return 0
+}

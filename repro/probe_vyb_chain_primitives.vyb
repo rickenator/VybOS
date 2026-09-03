@@ -1,0 +1,31 @@
+// probe_vyb_chain_primitives.vyb — pre-flight probes for the vyb_chain core:
+//  (1) crypto.sha256 available on the VybOS toolchain (Vyb-vybos, #195).
+//  (2) double-nested Vec-of-struct-with-Vec (Block{txs:Vec<Tx>} inside
+//      Chain{blocks:Vec<Block>}) — the 2026-08-24 double-free regression area.
+// Run: VYB_STDLIB=~/Projects/Vyb-vybos/stdlib ~/Projects/Vyb-vybos/build/vyb \
+//        repro/probe_vyb_chain_primitives.vyb
+import crypto::{sha256}
+
+struct Tx { sender<String>, receiver<String>, amount<Int> }
+struct Block { id<Int>, ts<Int>, prev<String>, hash<String>, merkle<String>, txs<Vec<Tx>> }
+struct Chain { blocks<Vec<Block>> }
+
+main()<Int> -> {
+    h<String> = sha256("hello")
+    println("SHA256_HELLO " + h)
+
+    txs<Vec<Tx>> = Vec()
+    txs.push(Tx { sender = "a", receiver = "b", amount = 5 })
+    txs.push(Tx { sender = "c", receiver = "d", amount = 3 })
+    b<Block> = Block { id = 1, ts = 100, prev = "p", hash = "hh", merkle = "m", txs = txs }
+    bs<Vec<Block>> = Vec()
+    bs.push(b)
+    ch<Chain> = Chain { blocks = bs }
+    n<Int> = ch.blocks.len()
+    t<Tx> = ch.blocks.get(0).txs.get(1)
+    s<String> = t.to_string()
+    println("NEST_OK n=" + n.to_string() + " tx1=" + t.sender + "/" + t.amount.to_string())
+    println("TX_JSON " + s)
+    println("TX_HASH " + sha256(s))
+    return 0
+}
