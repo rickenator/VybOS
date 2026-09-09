@@ -95,8 +95,24 @@ landed and climbed the whole stack:
 - **Nested content-addressed store, full 256-bit SHA-256 hex** — flat store
   cleared; `store/<hexca>/<name>-<ver>.{src,bin,meta.json}` via stdlib `fs::mkdir`.
 
-See `doc/RELEASE-BRUTAL-DOGFOOD.md`, `doc/PLAN-BUILD-DERIVATIONS.md`, and
-`doc/STATUS.md` for depth and honest limits.
+**VybChain — cryptographic package ledger (issue #8, recon + design 2026-09-04).**
+The design is set (see `doc/VYBCHAIN.md`): a tamper-evident, **signed**
+ledger engine in pure Vyb under package management, where every accepted
+package carries verifiable provenance (source revision → patches → build →
+validation → artifact hash) and complete states are identified by a
+deterministic state root. The cleanroom core — a port of the `rust_chain`
+concepts (hash-linked blocks, Merkle roots, JSON persistence, chain
+verification) into native Vyb, **not** its crypto framing — is landing as the
+**`stdlib/chain`** module in the Vyb repo: `Record` → `ChainBlock` (Merkle root,
+`hash = sha256(index|prev|root)`) → `Chain`, with `verify` / `append` /
+`tip_hash` / `contains` / `to_text` and value semantics. Core flows are verified
+on the toolchain (determinism, checkpoint round-trip, tamper detection). The
+core is an **integrity** layer; the **signature** layer (authenticity, key
+rotation, registry checkpoints, state roots) is the next increment and is the
+security bar issue #8 sets. A provenance ledger, not a currency.
+
+See `doc/RELEASE-BRUTAL-DOGFOOD.md`, `doc/PLAN-BUILD-DERIVATIONS.md`,
+`doc/VYBCHAIN.md`, and `doc/STATUS.md` for depth and honest limits.
 
 Also see `doc/VYB-LANGUAGE-NOTES.md` and `doc/STORE-LAYOUT.md`. Namespace/
 release-channel note: `doc/NAMESPACES.md` records the intended future split

@@ -1,0 +1,46 @@
+// probe_chain_heapcorr.vyb — minimal isolation: heap corruption from a nested
+// Vec.set write-back on a 1-record genesis block, followed by `verify`.
+//
+// Read the nested record (deep copy), write the COPY BACK through the
+// Vec<ChainBlock> level (records.set -> blk.records = rs -> chain.blocks.set),
+// then verify. No field is mutated (the copy is identical), yet the write-back
+// path corrupts the heap: the process ABORTS at exit ("double free or
+// corruption (!prev)" / "malloc(): unaligned tcache chunk"), exit 134 — even
+// though verify() printed true first.
+//
+// This goes through the real stdlib `chain` module (its `verify` -> `block_root`
+// Merkle-fold over a Vec<Vec<String>>), which is what test/modules/test_chain.vyb
+// hits. Read/verify/append/JSON-round-trip on the same shapes are crash-free;
+// only this in-place nested write-back followed by a verify pass aborts.
+//
+// Status (2026-09-04): reproduced on the synced toolchain (Vyb 6d89575, the
+// #215 field-offset fix). Same bug family as probe_vyb_copy_semantics.vyb.
+// Filing against rickenator/Vyb (see doc/VYBCHAIN.md §6).
+//
+// Run (expected: prints "verify=true" then ABORTS at exit, exit 134).
+// NOTE: stdlib/chain is uncommitted in the MAIN Vyb checkout as of
+// 2026-09-04, so point VYB_STDLIB at the main checkout until it lands
+// (the vyb-os-stable worktree doesn't carry it yet):
+//   VYB_STDLIB=~/Projects/Vyb/stdlib ~/Projects/Vyb/build/vyb \
+//       repro/probe_chain_heapcorr.vyb
+import chain::{new_chain, verify, Record, ChainBlock}
+
+main()<Int> -> {
+    r<Vec<Record>> = Vec()
+    r.push(Record { label = "a", value = "x" })
+    c<Chain> = new_chain("origin", r)
+
+    // The triggering pattern: deep-copy the nested record and write the copy
+    // back at BOTH levels via Vec.set — no field mutation, yet the write-back
+    // itself corrupts the heap when a verify pass follows.
+    rec<Record> = c.blocks.get(0).records.get(0)
+    rs<Vec<Record>> = c.blocks.get(0).records
+    rs.set(0, rec)
+    b<ChainBlock> = c.blocks.get(0)
+    b.records = rs
+    c.blocks.set(0, b)
+
+    v<Bool> = verify(c)
+    println("verify=" + v.to_string())
+    return 0
+}

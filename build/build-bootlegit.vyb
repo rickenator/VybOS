@@ -1,0 +1,121 @@
+// build-bootlegit.vyb — VybOS boot legitimization entry (dogfoods the shared
+// `chain` core via modules/bootlegit.vyb).
+//
+// Measures the REAL derived boot artifacts from the content-addressed store,
+// seals them into a legitimization chain, persists the receipt, re-reads it,
+// and proves a tamper is caught — all with the framework written in JIT Vyb:
+//
+//   1. find the derived kernel (linux-6.6-bzImage.bin) and the root/disk
+//      image (vybos-0.1-root.img) in the store;
+//   2. read each artifact's BYTES via stdlib io and recompute its store id in
+//      the SAME convention the store used, then assert it equals the
+//      content-addressed dir name:
+//        kernel -> vybos::content_hash("linux","6.6",bytes)  (identity hash)
+//        root   -> crypto::sha256(bytes)                     (raw byte hash)
+//      This proves the store really is content-addressed and the JIT hash path
+//      is faithful on real multi-MB binaries.
+//   3. seal_boot(gen, kernel_id, root_id, marker) -> the legitimization chain;
+//   4. is_legit / boot_token;
+//   5. persist the receipt, deserialize it back, and re-verify;
+//   6. tamper the persisted text (flip the marker, then the kernel id) and
+//      confirm verify FAILS while the unedited chain still verifies.
+//
+// The only host calls are the store discovery (find) and a trim — the same
+// freedom-`exec_output` pattern modules/realize.vyb and build/build-ctl.vyb
+// use; every cryptographic/legit step is pure Vyb.
+
+import io::{open_read, read_all, close}
+import process::{exec_output}
+import crypto::{sha256}
+import vybos::{content_hash}
+import bootlegit::{seal_boot, is_legit, boot_token, receipt}
+import chain::{deserialize, verify, tip_hash, Chain}
+
+// Run a shell command and return trimmed stdout (host discovery; the ONLY
+// non-pure step, matching build-ctl.vyb's `run` helper).
+sh(cmd<String>)<String> -> {
+    freedom {
+        s<String> = exec_output(cmd) else ""
+        return s.trim()
+    }
+}
+
+// Read a file's bytes. "" on open/read failure.
+read_file(path<String>)<String> -> {
+    match (open_read(path)) {
+        f -> {
+            match (read_all(f)) {
+                s -> { close(f); return s }
+                ? -> { close(f); return "" }
+            }
+        }
+        ? -> { return "" }
+    }
+}
+
+// Directory name of a file's parent (the content-addressed id in the store).
+dir_name(path<String>)<String> -> {
+    return sh("basename $(dirname \"" + path + "\")")
+}
+
+check(cond<Bool>, label<String>)<Int> -> {
+    if (!cond) { println("  FAIL " + label); return 1 }
+    println("  ok   " + label)
+    return 0
+}
+
+main()<Int> -> {
+    // --- 1. discover the real derived boot artifacts in the store ---
+    kp<String> = sh("find store -name 'linux-6.6-bzImage.bin' 2>/dev/null | head -1")
+    rp<String> = sh("find store -name 'vybos-0.1-root.img' 2>/dev/null | head -1")
+    if (kp.len() == 0 || rp.len() == 0) {
+        println("  FAIL store has no derived kernel/root image (run the build-derive + build-image stages first)")
+        println("\nBOOT-LEGIT: MISSING ARTIFACTS")
+        return 1
+    }
+    kd_dir<String> = dir_name(kp)      // kernel content-addressed id (store)
+    rd_dir<String> = dir_name(rp)      // root image content-addressed id (store)
+
+    // --- 2. hash the real bytes in-Vyb; prove content-addressing per convention ---
+    kb<String> = read_file(kp)
+    rb<String> = read_file(rp)
+    kh<String> = content_hash(kb, "linux", "6.6")   // kernel identity convention
+    rh<String> = sha256(rb)                          // root raw-byte convention
+    fails<Int> = 0
+    fails = fails + check(kh == kd_dir, "kernel bytes re-hash (identity) == store dir")
+    fails = fails + check(rh == rd_dir, "root image bytes re-hash (raw) == store dir")
+
+    // --- 3. seal the boot identity into the legitimization chain ---
+    gen<String> = "gen-" + rd_dir
+    c<Chain> = seal_boot(gen, kh, rh, "VYBOS_READY")
+    fails = fails + check(is_legit(c), "sealed boot is legit (genesis + boot-event verify)")
+    token<String> = boot_token(c)
+    fails = fails + check(token.len() == 64, "boot token is a sha256 digest")
+
+    // --- 4. persist the receipt, re-read, re-verify ---
+    rcpt<String> = receipt(c)
+    back<Chain> = deserialize(rcpt)
+    fails = fails + check(verify(back), "receipt round-trips and re-verifies")
+    fails = fails + check(tip_hash(back) == token, "receipt tip == sealed boot token")
+
+    // --- 5. tamper the persisted receipt -> verify must FAIL ---
+    evil<String> = rcpt.replace("VYBOS_READY", "FORGED_READY")
+    back_evil<Chain> = deserialize(evil)
+    fails = fails + check(!verify(back_evil), "tampered receipt (for marker) is rejected")
+    evil2<String> = rcpt.replace(kh, "0000000000000000000000000000000000000000000000000000000000000000")
+    back_evil2<Chain> = deserialize(evil2)
+    fails = fails + check(!verify(back_evil2), "tampered receipt (for kernel id) is rejected")
+
+    // --- the unedited chain still verifies (value semantics) ---
+    fails = fails + check(is_legit(c), "unedited boot chain still legit")
+
+    println("  gen     : " + gen)
+    println("  kernel  : " + kh)
+    println("  root    : " + rh)
+    println("  token   : " + token)
+    sum<String> = "BOOT-LEGIT: PASS (boot legitimized, 2 tamper checks caught)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

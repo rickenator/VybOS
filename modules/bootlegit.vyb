@@ -1,0 +1,67 @@
+// bootlegit.vyb — VybOS boot legitimization (one consumer of the shared
+// `chain` core from the Vyb stdlib).
+//
+// A boot is "legit" when the artifacts that produced it are sealed into a
+// hash-chained ledger and the ledger still verifies:
+//   * the generation id (which immutable gen-<digest> the `current` pointer
+//     selects — see modules/gensys.vyb, build-ctl.vyb),
+//   * the kernel image content hash (the derived Linux bzImage / vmlinux),
+//   * the rootfs / disk image content hash, and
+//   * the boot marker the guest must print to reach VYBOS_READY.
+//
+// This module is PURE (no file I/O, no host calls): it takes the measured
+// facts and seals them. The entry (build/build-bootlegit.vyb) measures the
+// real kernel image from the store, seals, persists, re-reads, and proves a
+// tamper is caught. The persisted `serialize` text is the boot receipt;
+// `deserialize` + `verify` re-establish integrity after any on-disk edit —
+// exactly the same pattern the content-addressed store and the generation
+// ledger (modules/plan.vyb) already rely on.
+//
+// The legitimizing `origin` marker is "vybos/boot", so a forged chain
+// (anyone can produce one that verifies) cannot be mistaken for VybOS's —
+// but a VybOS-origin chain whose facts were altered on disk WILL fail
+// `verify`. Authenticity against forgery needs real signatures (#204);
+// this slice is integrity.
+
+import chain::{new_chain, append, verify, tip_hash, contains, serialize, deserialize,
+             Record}
+
+// Seal the boot identity: a genesis block of the measured artifacts, then an
+// append block recording that boot reached the READY marker (the boot event).
+// `kernel_hash` / `rootfs_hash` are the content-addressed digests of the
+// derived kernel image and the root/disk image the boot actually used.
+share(all)
+seal_boot(gen_id<String>, kernel_hash<String>, rootfs_hash<String>,
+          ready_marker<String>)<Chain> -> {
+    facts<Vec<Record>> = Vec()
+    facts.push(Record { label = "generation", value = gen_id })
+    facts.push(Record { label = "kernel", value = kernel_hash })
+    facts.push(Record { label = "rootfs", value = rootfs_hash })
+    facts.push(Record { label = "marker", value = ready_marker })
+    base<Chain> = new_chain("vybos/boot", facts)
+    ev<Vec<Record>> = Vec()
+    ev.push(Record { label = "event", value = "boot-complete" })
+    ev.push(Record { label = "ready", value = ready_marker })
+    return append(base, ev)
+}
+
+// True iff the sealed boot is internally consistent (genesis + boot-event
+// block verify, prev-links intact, tip present).
+share(all)
+is_legit(c<Chain>)<Bool> -> {
+    if (!verify(c)) { return false }
+    if (!c.origin.contains("vybos/boot")) { return false }
+    return contains(c, "event", "boot-complete")
+}
+
+// The legitimizing token for this boot (its tip hash).
+share(all)
+boot_token(c<Chain>)<String> -> {
+    return tip_hash(c)
+}
+
+// The persisted boot receipt (persist it; re-read + verify to re-legitimize).
+share(all)
+receipt(c<Chain>)<String> -> {
+    return serialize(c)
+}

@@ -1,6 +1,6 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-09-03 (service OPTIONS — port + args — deepened into plan.Service, dogfooded in sshd/nginx, end-to-end to services.sh/init; Vyb#215 serializer bug found + worked around via bool-first field order)
+> last_updated: 2026-09-04 (VybChain #8 recon + design: cleanroom core `stdlib/chain` verified on the Vyb toolchain — determinism, checkpoint round-trip, tamper detection; security bar = signature layer on `crypto`; two toolchain codegen bugs blocking the in-memory tamper tests (workaround proven: bottom-up / persistence-based construction); design + status in doc/VYBCHAIN.md, repro pin repro/probe_chain_heapcorr.vyb)
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -237,9 +237,42 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
   (regression probe: `build/build-compose.vyb` invariant 9; repro/workaround
   probes `build/probe-bool-matrix.vyb` / `build/probe-bool-first.vyb`). Do not
   reorder `Service`'s fields until the fix lands.
+  **FIXED 2026-09-04** in toolchain `6d89575` (`fix(#215): set host
+  DataLayout before codegen so baked field offsets match the real layout`,
+  pulled by `sync-os-toolchain.sh`): the repro now serializes clean on the
+  synced toolchain. The `Service` bool-first ordering is retained as a
+  belt-and-braces invariant (revert only with a green
+  `build/probe-bool-matrix.vyb`).
+- **VybChain #8 (recon + design 2026-09-04)** — issue #8 (cryptographic
+  package ledger) recon completed: cleanroom reference inventoried
+  (`rickenator/rust_chain`, 6 Rust files ~582 LOC); the cleanroom core is
+  **in flight in the Vyb repo** as `stdlib/chain` (+
+  `test/modules/test_chain.vyb`, uncommitted at this writing): `Record`→
+  `ChainBlock` (Merkle root, `hash = sha256(index|prev|root)`)→`Chain`,
+  `verify`/`append`/`tip_hash`/`contains`/`to_text`, value semantics.
+  **Verified on the toolchain (real runs):** seal+verify ✓, append+link ✓,
+  determinism (same facts → same tip) ✓, `to_string()`→`from_string`
+  checkpoint round-trip verifies with identical tip ✓. **Security gap:** the
+  core is integrity-only (`origin` is a shared constant → forgeable); the
+  signature layer (Ed25519-recommended `crypto` primitives, keyed origins,
+  in-ledger `replace_key`, registry checkpoints, state roots) is the Phase-2
+  increment — **blocked on new crypto in the Vyb repo**. Two toolchain
+  codegen bugs block the in-memory tamper tests (both on pushed
+  `origin/main` @ `6d89575`): (1) nested `Vec.set` write-back + `verify`
+  aborts at exit (heap corruption — minimal repro
+  `repro/probe_chain_heapcorr.vyb`, exit 134); (2) the pinned
+  `repro/probe_vyb_copy_semantics.vyb` still fails LLVM module verification
+  (same family). **Workaround proven:** construct tampered/derived chains
+  bottom-up from values or via persistence (`from_string`), never nested
+  `Vec.set`. Full design, phase status, open decisions: **doc/VYBCHAIN.md**.
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
+- [ ] **VybChain (issue #8)** — Phase 1/2 work, status in `doc/VYBCHAIN.md`:
+      the cleanroom core (`stdlib/chain`) is in flight in the Vyb repo; the
+      VybOS side waits for (a) the two toolchain codegen fixes (§3 Vyb
+      issues), (b) the `crypto` signature primitives (impl-agent RFE), then
+      the package-record domain + resolver/installer integration land here.
 - [x] **Real-HTTP(S) source-TREE realization**: `build/build-real-tree.vyb`
       realises a FULL source *tree* from a REAL GitHub tarball over genuine TLS
       (`https_get_full_verified` + system CA) — `url_split` → verified-TLS fetch
@@ -279,11 +312,13 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
       `config/system.vyb` listing, the generated `services.sh` activator
       (runs command + args), and the init banner (`port=N`). Invariants:
       `build/build-compose.vyb` §7–9 (port/args ride the fold; options
-      round-trip the spec JSON). GOTCHA: `Service` declares `enabled<Bool>`
-      FIRST — Vyb toolchain bug rickenator/Vyb#215 corrupts any Int field
-      serialized after a Bool field at index ≥ 1 (in-mem reads fine, JSON
-      garbage); bool-first is the verified workaround (see
-      doc/COMPOSITION.md "Service options", probes `build/probe-bool-*.vyb`).
+      round-trip the spec JSON). CONVENTION: `Service` declares `enabled<Bool>`
+      FIRST — this guarded against Vyb toolchain bug rickenator/Vyb#215
+      (any Int field serialized after a Bool field at index ≥ 1 was corrupted;
+      in-mem reads fine, JSON garbage). The bug was FIXED in toolchain
+      `6d89575` (2026-09-04 sync); the bool-first ordering is retained as a
+      belt-and-braces invariant (see doc/COMPOSITION.md "Service options",
+      probes `build/probe-bool-*.vyb`).
 - [x] **Build-stage derivations → kernels-from-source + determinism** (see
       doc/PLAN-BUILD-DERIVATIONS.md): landed in sequence — hello-vyb
       (byte-reproducible), busybox 1.36.1 (real fetched source → built ELF), a
@@ -331,6 +366,6 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
 
 - `README.md`, `GOAL.md`, `AGENTS.md`, `doc/` (RTD: `doc/COMPOSITION.md`,
   `doc/ARCHITECTURE.md`, `doc/STORE-LAYOUT.md`, `doc/VYB-LANGUAGE-NOTES.md`,
-  `doc/RFE-M2.md`, `doc/POSITIONING.md`).
+  `doc/RFE-M2.md`, `doc/POSITIONING.md`, `doc/VYBCHAIN.md`).
 - Vyb semantics: `<VybOS toolchain checkout>` stdlib + the compiler repo's
   `docs/refman/PROGRAMMERS_GUIDE.md`.

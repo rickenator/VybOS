@@ -3,6 +3,9 @@
 *.o
 *.a
 
+# Agent working state (scratch analysis reports, issue drafts) — not source.
+.hermes/
+
 # Realised store is a build cache (regenerated), not source.
 store/
 

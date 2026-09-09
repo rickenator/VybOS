@@ -131,12 +131,14 @@ generated `/etc/vyb-os/services.sh` activator (which runs `command` + `args`),
 and the init banner (`nginx port=80`). `port` is supervisor metadata — it is
 *not* part of the argv.
 
-**Field-order caveat (Vyb#215):** `plan.Service` declares `enabled<Bool>`
-FIRST. A Vyb toolchain bug (rickenator/Vyb#215) makes `to_string()` emit
-garbage for any `Int` field that follows a `Bool` field at index ≥ 1;
-bool-first serializes cleanly. Do not reorder the fields until the compiler
-fix lands (regression probe: `build/build-compose.vyb` invariant 9,
-repro/workaround probes `build/probe-bool-matrix.vyb` /
+**Field-order convention (Vyb#215, fixed 2026-09-04):** `plan.Service` declares
+`enabled<Bool>` FIRST. This was required because a Vyb toolchain bug
+(rickenator/Vyb#215) made `to_string()` emit garbage for any `Int` field that
+follows a `Bool` field at index ≥ 1; the fix (host `DataLayout` set before
+codegen, toolchain `6d89575`) landed 2026-09-04, but the bool-first ordering
+is retained as a belt-and-braces invariant — revert only with a green
+`build/probe-bool-matrix.vyb` (regression probe: `build/build-compose.vyb`
+invariant 9; repro/workaround probes `build/probe-bool-matrix.vyb` /
 `build/probe-bool-first.vyb`).
 
 ## Status / next

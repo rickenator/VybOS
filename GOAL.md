@@ -91,6 +91,11 @@ insulating VybOS from impl-agent churn on the main checkout.
 
 ## Remaining (see doc/STATUS.md §4)
 
+- **VybChain (issue #8)** — the cryptographic package ledger: cleanroom core
+  landing as Vyb `stdlib/chain` (verified flows); security bar = the signature
+  layer on `crypto` (authenticity, in-ledger key rotation, registry
+  checkpoints, deterministic state roots), then the package-record domain and
+  resolver/installer integration. Design + phase status: `doc/VYBCHAIN.md`.
 - Bootable image: root/disk image (B5), bootloader, gen-switch, VybOS's own
   (non-stand-in) userspace.
 - Generations wiring into an atomic profile flip (needs the `rename`/`symlink`

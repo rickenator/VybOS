@@ -1,0 +1,19 @@
+// n218_minimal.vyb — minimal #218 triggers + control, for regression checking.
+main()<Int> -> {
+    a<Bool> = true
+    n<Int> = 42
+
+    // control: both branches String literals (never hit the bug)
+    println(if (a) { "AAA" } else { "BBB" })
+
+    // trigger: literal (struct) vs char* mixed-concat (must now unify in-branch)
+    println(if (a) { "AAA" } else { "n=" + n.to_string() })
+
+    // trigger flip: else-branch literal, then-branch concat (must pick then-branch type)
+    println(if (a) { "m=" + n.to_string() } else { "BBB" })
+
+    // if-expression used as a value in a larger concat (mixed with to_string)
+    r<String> = if (a) { "yes" } else { "no" }
+    println("OPT-VALUE " + r)
+    return 0
+}
