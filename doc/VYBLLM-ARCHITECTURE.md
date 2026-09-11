@@ -99,14 +99,17 @@ on-demand reload.
 
 1. **Create `Vyb/stdlib/vllm/`** — relocate the engine pieces from VybForge
    `native/` into the stdlib module behind the `llm.vyb` facade. No behavior
-   change. **[DONE — checkpoint 1: tokenizer landed as PR #242, stdlib/vllm/
-   mod.vyb, artifact paths decoupled behind `VYB_LLM_DIR`; relocated algorithm
-   verified exact cross-repo from VybForge; Vyb suite 1147/1147]**
+   change. **[DONE — checkpoint 1: tokenizer (PR #242); checkpoint 2: sampler
+   (PR #243); both relocated byte-identical, artifact paths decoupled behind
+   `VYB_LLM_DIR`, verified exact cross-repo from VybForge (probes in VybForge
+   `native/legit/verify_vllm_{tokenizer,sampler}.vyb`), Vyb suite green]**
 2. **Keep VybForge green** — VybForge imports `stdlib/vllm` (via the Vyb
    stdlib it already uses), so `make -f native/Makefile verify` keeps passing —
-   proving a pure relocate, not a rewrite.
+   proving a pure relocate, not a rewrite. **[DONE — cross-repo probes green]**
 3. **Extract `vygpu.vyb`** with `[mod] boundary=["freedom"]`; route kernel
-   entry points through it.
+   entry points through it. Includes folding the GGUF loader + GPU kernels
+   under `llm::` (the GGUF parse files in VybForge are currently verification
+   DRIVERS, so the reusable loader form lands here).
 4. **VybOS boot** wires `models.admin` (admin 4B) load + the root-privileged
    on-demand admin reload (capability-guarded); **VybForge** wires
    `models.builder` (os-builder 4B).
