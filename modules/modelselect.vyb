@@ -1,0 +1,169 @@
+// modelselect.vyb — VybOS MODEL-SELECTION LAYER (VYBLLM-ARCHITECTURE §4;
+// doc/MODEL-SELECTION.md).
+//
+// Resolves a role's model assignment (models.admin / models.builder / user
+// any-model) against the SIGNED model registry:
+//   - a model IS a signed package-record (packagerecord.vyb) on the shared
+//     stdlib/chain core, sealed under the registry key,
+//   - the registry ledger (ledger.vyb) records publish/promote/revoke/yank
+//     authority (availability),
+// and produces the per-model tokenizer DIR the stdlib/vllm Model facade
+// consumes (model_load(name, dir)). The dir is content-addressed under a
+// store root (storeRoot/<name>-<ver>), mirroring storeindex's address scheme.
+//
+// Privilege model (capability classifier — doc/MODEL-SELECTION.md):
+// selecting the ADMIN role — boot default AND on-demand reload of VybOS's
+// own trusted agent — is a ROOT-LEVEL privilege; it requires the caller's
+// credential token (`cred`) to equal the root token (`root_token`). User
+// any-model load and the builder default are unprivileged (cred may be "").
+//
+// A model is only selected when ALL hold:
+//   - the registry ledger is authentic under reg_pub (signed_verify +
+//     ledger state root matches ledger_root),
+//   - the model record is authentic under reg_pub (signed_verify + its
+//     deterministic record root matches),
+//   - want (name@version) is PUBLISHED in the ledger (not revoked/yanked),
+//   - role == "admin" implies cred == root_token.
+//
+// The module NEVER embeds seeds/tokens — all key + credential material is
+// caller-supplied (RFC 8032 test seeds + a fixed root token in the fixture
+// program only).
+//
+// Run-free library (no main); proven by build/build-modelselect.vyb.
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-modelselect.vyb --module-path modules
+
+import packagerecord::{is_legit_record}
+import ledger::{replay_state, is_legit_ledger}
+import chain::{SignedChain, Record}
+import collections
+
+// The outcome of selecting one role's model. `dir` is the per-model tokenizer
+// dir the stdlib/vllm `Model` facade loads via model_load(name, dir).
+share(all)
+struct ModelSel {
+    role<String>,
+    name<String>,
+    version<String>,
+    dir<String>,
+    ok<Bool>,
+    reason<String>
+}
+
+share(all)
+struct NameVer { name<String>, version<String> }
+
+// The sealed name@version of a model-record chain (first "name"/"version"
+// records found, matching packagerecord's genesis record layout).
+share(all)
+sealed_namever(sc<SignedChain>)<NameVer> -> {
+    name<String> = ""
+    ver<String> = ""
+    nb<Int> = sc.chain.blocks.len()
+    if (nb > 0) {
+        for (b in 0..nb - 1) {
+            r<Vec<Record>> = sc.chain.blocks.get(b).records
+            m<Int> = r.len()
+            if (m > 0) {
+                for (i in 0..m - 1) {
+                    rec<Record> = r.get(i)
+                    if (rec.label == "name" && name == "") { name = rec.value }
+                    if (rec.label == "version" && ver == "") { ver = rec.value }
+                }
+            }
+        }
+    }
+    return NameVer { name = name, version = ver }
+}
+
+// Index of the model record whose sealed name@version == want, else -1.
+share(all)
+find_model_index(records<Vec<SignedChain>>, want<String>)<Int> -> {
+    n<Int> = records.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            nv<NameVer> = sealed_namever(records.get(i))
+            if (nv.name + "@" + nv.version == want) { return i }
+        }
+    }
+    return -1
+}
+
+// The registry replay state, split into canonical lines (replay_state joins
+// the sorted line set with "; ").
+share(all)
+state_parts(sc<SignedChain>)<Vec<String>> -> {
+    st<String> = replay_state(sc)
+    if (st == "") { return Vec() }
+    return st.split("; ")
+}
+
+// Is `want` currently published/active (a:line) in the registry replay?
+share(all)
+is_published(sc<SignedChain>, want<String>)<Bool> -> {
+    parts<Vec<String>> = state_parts(sc)
+    n<Int> = parts.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            if (parts.get(i) == "a:" + want) { return true }
+        }
+    }
+    return false
+}
+
+// Is `want` revoked (x:) or yanked (y:) — i.e. NOT available?
+share(all)
+is_revoked_or_yanked(sc<SignedChain>, want<String>)<Bool> -> {
+    parts<Vec<String>> = state_parts(sc)
+    n<Int> = parts.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            p<String> = parts.get(i)
+            if (p == "x:" + want) { return true }
+            if (p == "y:" + want) { return true }
+        }
+    }
+    return false
+}
+
+// Reject shorthand.
+share(all)
+reject(role<String>, reason<String>)<ModelSel> -> {
+    return ModelSel { role = role, name = "", version = "", dir = "", ok = false, reason = reason }
+}
+
+// Select + verify one role's model against the signed registry, producing the
+// per-model tokenizer dir for the stdlib/vllm `Model` facade.
+//   role        "admin" (root-gated) | "builder" | "user"
+//   want        "name@version" model id
+//   registry    the signed model-registry ledger (ledger.vyb)
+//   records     signed per-model package records (packagerecord.vyb)
+//   roots       parallel expected record roots (deterministic record_root at seal)
+//   reg_pub     the registry/forge pubkey (trust root)
+//   ledger_root expected registry state root (auth gate on the ledger)
+//   store_root  content-addressed store root; dir = storeRoot/<name>-<ver>
+//   root_token  the root credential token (admin gate)
+//   cred        the caller's credential token ("" = unprivileged)
+share(all)
+select_model(role<String>, want<String>, registry<SignedChain>,
+             records<Vec<SignedChain>>, roots<Vec<String>>,
+             reg_pub<String>, ledger_root<String>, store_root<String>,
+             root_token<String>, cred<String>)<ModelSel> -> {
+    # capability classifier: the admin role (boot default + on-demand reload
+    # of VybOS's own trusted agent) is root-gated.
+    if (role == "admin") {
+        if (cred != root_token) { return reject(role, "admin reload requires root privilege (credential denied)") }
+    }
+    # 1. registry authority: signed + ledger state root matches.
+    if (!is_legit_ledger(registry, ledger_root, reg_pub)) { return reject(role, "model registry ledger not authentic under registry key") }
+    # 2. the model record is present and AUTHENTIC (signed + record root).
+    i<Int> = find_model_index(records, want)
+    if (i < 0) { return reject(role, "model '" + want + "' not in signed registry") }
+    nv<NameVer> = sealed_namever(records.get(i))
+    if (!is_legit_record(records.get(i), roots.get(i), reg_pub)) { return reject(role, "model record '" + want + "' not authentic under registry key") }
+    # 3. availability: published, not revoked/yanked.
+    if (!is_published(registry, want)) { return reject(role, "model '" + want + "' not published/active in registry") }
+    if (is_revoked_or_yanked(registry, want)) { return reject(role, "model '" + want + "' revoked/yanked in registry") }
+    # 4. content-addressed store dir the Model facade loads.
+    dir<String> = store_root + "/" + nv.name + "-" + nv.version
+    return ModelSel { role = role, name = nv.name, version = nv.version, dir = dir, ok = true, reason = "verified" }
+}

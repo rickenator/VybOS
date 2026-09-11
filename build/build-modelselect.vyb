@@ -1,0 +1,141 @@
+// build-modelselect.vyb — VybOS MODEL-SELECTION LAYER proving entry
+// (VYBLLM-ARCHITECTURE §4; doc/MODEL-SELECTION.md). Checkpoint A.
+//
+// Builds a FIXTURE signed model registry — a ledger.vyb registry with three
+// published models (admin 4B, builder 4B, a generic user model), each with a
+// signed packagerecord.vyb model record under the SAME registry key — then
+// drives modules/modelselect.vyb and proves SELECTION + VERIFICATION:
+//
+//   1. admin model selected with the root credential        -> ok, dir
+//   2. admin reload attempted UNPRIVILEGED (cred="")        -> rejected (root gate)
+//   3. builder default selected unprivileged                -> ok, dir
+//   4. user any-model selected unprivileged                 -> ok, dir
+//   5. model not in the signed registry                     -> rejected
+//   6. a REVOKED model (separate fixture ledger)            -> rejected
+//   7. TAMPERED model record (original sigs, signature gate)-> rejected
+//   8. wrong registry pubkey anchors nothing                -> rejected
+//   9. selected dir is the content-addressed form           -> dir == storeRoot/name-ver
+//
+// Key/credential material: RFC 8032 TEST seeds + a fixed root-token string,
+// scaffold-only, matching build-packagerecord.vyb / build-ledger.vyb.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-modelselect.vyb --module-path modules
+
+import modelselect::{ModelSel, select_model}
+import packagerecord::{Patch, ModuleRecord, record_root, seal_module_record}
+import ledger::{registry_genesis, apply_op, PkgOp, state_root, is_legit_ledger}
+import chain::{serialize, deserialize, SignedChain, Chain}
+import crypto::{ed25519_publickey}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+// Build a fixture model package-record (a model IS a signed package-record).
+mkRec(name<String>, ver<String>, artifact<String>, pats<Vec<Patch>>, seed<String>)<ModuleRecord> -> {
+    return ModuleRecord {
+        name = name, version = ver, target = "x86_64-linux", namespace = "vyos-models",
+        upstreamRepo = "huggingface/Qwen3-4B", upstreamRevision = "v1",
+        pristineHash = "h_pristine_" + name, closure = name + "@" + ver,
+        toolchain = "Vyb 0.7.x", buildFlags = "-q4", builderId = "vybforge-builder",
+        validation = "eval:26/26", artifactHash = artifact,
+        publisherSeed = seed, timestamp = "2026-09-11T00:00:00Z", patches = pats
+    }
+}
+
+// Build a signed model record + its deterministic root.
+sealRec(rec<ModuleRecord>, seed<String>)<SignedChain> -> {
+    return seal_module_record(rec, "vybforge/models", seed)
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    # keys (RFC 8032 TEST seeds) + root credential (scaffold-only)
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    publisher<String> = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    regPub<String> = ed25519_publickey(seed1)
+    otherPub<String> = ed25519_publickey(seed2)
+    rootToken<String> = "root-capability-v1"
+    storeRoot<String> = "store/models"
+
+    # ---- signed model registry ledger: publish admin / builder / generic ----
+    reg<SignedChain> = registry_genesis("vymodels", "model-registry-v1", seed1)
+    reg = apply_op(reg, PkgOp { kind = "publish", name = "qwen-admin",    version = "1.0.0", stage = "", hash = "h_admin4b" },     seed1)
+    reg = apply_op(reg, PkgOp { kind = "publish", name = "qwen-builder",  version = "0.9.0", stage = "", hash = "h_builder4b" },   seed1)
+    reg = apply_op(reg, PkgOp { kind = "publish", name = "pt-small",      version = "0.4.0", stage = "", hash = "h_pt_generic" },  seed1)
+    ledgerRoot<String> = state_root(reg)
+    fails = fails + check(isRegistr(reg, ledgerRoot, regPub), "fixture registry ledger authentic under registry key")
+
+    # ---- signed model records (one per published model) ----
+    # admin record carries one generated training patch (provenance)
+    ap1<Patch> = Patch { id = "1", hash = "h_admintrain", cls = "generated", generator = "qwen-admin@1.0.0", prompt = "build admin ops corpus", response = "synthetic ops spec" }
+    adminPats<Vec<Patch>> = Vec(); adminPats.push(ap1)
+    adminRec<ModuleRecord> = mkRec("qwen-admin", "1.0.0", "h_admin4b", adminPats, publisher)
+    builderRec<ModuleRecord> = mkRec("qwen-builder", "0.9.0", "h_builder4b", Vec(), publisher)
+    genRec<ModuleRecord> = mkRec("pt-small", "0.4.0", "h_pt_generic", Vec(), publisher)
+
+    adminSc<SignedChain> = sealRec(adminRec, seed1)
+    builderSc<SignedChain> = sealRec(builderRec, seed1)
+    genSc<SignedChain> = sealRec(genRec, seed1)
+
+    records<Vec<SignedChain>> = Vec()
+    records.push(adminSc); records.push(builderSc); records.push(genSc)
+    roots<Vec<String>> = Vec()
+    roots.push(record_root(adminRec)); roots.push(record_root(builderRec)); roots.push(record_root(genRec))
+
+    # 1. admin model, called with the ROOT credential -> verified + dir
+    a<ModelSel> = select_model("admin", "qwen-admin@1.0.0", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, rootToken)
+    fails = fails + check(a.ok, "admin model selected + verified (dir=" + a.dir + ")")
+    fails = fails + check(a.dir == storeRoot + "/qwen-admin-1.0.0", "admin dir is content-addressed storeRoot/name-ver")
+
+    # 2. on-demand admin RELOAD attempted without root privilege -> denied
+    b<ModelSel> = select_model("admin", "qwen-admin@1.0.0", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(!b.ok, "admin reload refused without root credential")
+
+    # 3. builder default, unprivileged -> verified
+    c<ModelSel> = select_model("builder", "qwen-builder@0.9.0", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(c.ok && c.dir == storeRoot + "/qwen-builder-0.9.0", "builder default selected unprivileged + dir")
+
+    # 4. user any-model (generic), unprivileged -> verified
+    d<ModelSel> = select_model("user", "pt-small@0.4.0", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(d.ok && d.dir == storeRoot + "/pt-small-0.4.0", "user any-model selected unprivileged + dir")
+
+    # 5. model not in the signed registry -> rejected
+    e<ModelSel> = select_model("user", "ghost-llm@9.9.9", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(!e.ok, "unknown model rejected (not in signed registry)")
+
+    # 6. REVOKED model -> rejected. Separate fixture ledger publishes then revokes.
+    rreg<SignedChain> = registry_genesis("vymodels", "model-registry-v1", seed1)
+    rreg = apply_op(rreg, PkgOp { kind = "publish", name = "pt-small", version = "0.4.0", stage = "", hash = "h_pt_generic" }, seed1)
+    rreg = apply_op(rreg, PkgOp { kind = "revoke",  name = "pt-small", version = "0.4.0", stage = "", hash = "" }, seed1)
+    rroot<String> = state_root(rreg)
+    f<ModelSel> = select_model("user", "pt-small@0.4.0", rreg, records, roots, regPub, rroot, storeRoot, rootToken, "")
+    fails = fails + check(!f.ok, "revoked model rejected (registry authority)")
+
+    # 7. TAMPERED model record (kept original signatures) -> signature gate
+    txt<String> = serialize(adminSc.chain)
+    evil<String> = txt.replace("h_admin4b", "h_FORGED_WEIGHTS")
+    tchain<Chain> = deserialize(evil)
+    forged<SignedChain> = SignedChain { chain = tchain, signers = adminSc.signers, sigs = adminSc.sigs, rotations = adminSc.rotations }
+    forgedRecords<Vec<SignedChain>> = Vec(); forgedRecords.push(forged); forgedRecords.push(builderSc); forgedRecords.push(genSc)
+    g<ModelSel> = select_model("admin", "qwen-admin@1.0.0", reg, forgedRecords, roots, regPub, ledgerRoot, storeRoot, rootToken, rootToken)
+    fails = fails + check(!g.ok, "tampered model record rejected (signature gate)")
+
+    # 8. wrong registry pubkey anchors nothing
+    h<ModelSel> = select_model("admin", "qwen-admin@1.0.0", reg, records, roots, otherPub, ledgerRoot, storeRoot, rootToken, rootToken)
+    fails = fails + check(!h.ok, "model selection rejected under wrong registry pubkey")
+
+    sum<String> = "MODEL-SELECT: PASS (signed registry selection + verification, root-gated admin, tamper/revoke/wrong-key rejects)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
+
+# local helper: registry is authentic under reg_pub with expected state root.
+isRegistr(reg<SignedChain>, expectedRoot<String>, pubkey<String>)<Bool> -> {
+    return is_legit_ledger(reg, expectedRoot, pubkey)
+}
