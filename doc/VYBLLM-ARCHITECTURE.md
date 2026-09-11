@@ -155,9 +155,12 @@ sits on top without moving the GPU code.
 ## 6. Open / deferred
 
 - GPU inference routing — the OS/Forge consume `bindings/cuda` (+ VybForge
-  native kernels/tensor) as bindings, not through the portable stdlib engine;
-  a higher-level `llm::` facade over both CPU (vllm) + GPU (bindings) paths can
-  be added later without moving code.
+  native kernels/tensor) as bindings; a higher-level `llm::` layer composes the
+  CPU (vllm) + GPU (bindings) paths. **[Model facade landed 2026-09-11 — the
+  portable CPU core now exposes `Model`/`model_load`/`model_encode`/
+  `model_decode`/`model_sample` with per-model tokenizer dirs (PR #244),
+  verified cross-repo from VybForge; a GPU-composing `llm::` forward remains
+  the hardware-bound half]**
 - Real Qwen3-4B swap-in (VybForge in-progress) proceeds independently; the
   closed engine does not block it.
 - Exact privilege mechanics for root-level admin reload (how "root" is
