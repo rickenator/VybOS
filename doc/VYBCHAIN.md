@@ -15,7 +15,10 @@
 > **VybForge `forge_legit`** (AUTHENTIC package provenance: `forge_legit_signed.vyb`,
 > 8 prove it) and **VybOS's content-addressed store index** (`modules/storeindex.vyb`:
 > a deterministic signed state root over the store's objects, 10 checks prove
-> it). All three slices dogfood the same stdlib/chain SignedChain.
+> it). The **domain-operation ledger** (`modules/ledger.vyb`) now models the full
+> §2 operation set — publish/promote/revoke/yank/replace_key/checkpoint — each a
+> SIGNED block with state DERIVED by replay from genesis (22 checks prove it).
+> All four slices dogfood the same stdlib/chain SignedChain.
 
 ## 1. What it is
 

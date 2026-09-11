@@ -1,0 +1,188 @@
+// ledger.vyb — VybOS VybChain DOMAIN-OPERATION LEDGER (VybOS #8, §2/§5).
+//
+// The registry keeps an AUTHENTIC, replayable history of package-management
+// operations — publish / promote / revoke / yank / replace_key / checkpoint —
+// each appended as a SIGNED block on the stdlib/chain SignedChain core. The
+// CURRENT registry state (which name@version is published, its promotion
+// stage, what's revoked/yanked, the active signing key) is never stored
+// mutable — it is DERIVED by replaying the ledger from genesis, so the ledger
+// IS the single source of truth and any tamper with history breaks both
+// `signed_verify` AND the recomputed state root.
+//
+//   publish      name@version -> active        (the artifact is available)
+//   promote      name@version -> stage         (dev/staging/stable promotion)
+//   revoke       name@version -> revoked       (\_ availability control:
+//   yank         name@version -> yanked        (/  still in history, no longer offered)
+//   replace_key  old -> new signing key, authorized by the OLD key (in-ledger
+//                rotation via signed_append's old_seed — never invisible state)
+//   checkpoint   the forge/registry signs (seq, tip) for OFFLINE verification;
+//                a full ledger indent. an external verifier needs only the
+//                forge pubkey + a checkpoint to confirm the state at a height.
+//
+// Every appended operation carries the CURRENT active signer's Ed25519 key;
+// the genesis signer is the registry's trust root. The module NEVER embeds
+// key material — seeds are caller-supplied.
+//
+// Run-free library (no main); proven by build/build-ledger.vyb.
+
+import collections
+import chain::{signed_genesis, signed_append, signed_verify, tip_hash, Record,
+             SignedChain, sign_checkpoint, verify_checkpoint}
+import crypto::{sha256}
+
+// A single registry operation. `kind` ∈ {publish, promote, revoke, yank,
+// replace_key} via String classifier (VybOS convention: no enum fields).
+share(all)
+struct PkgOp {
+    kind<String>,
+    name<String>,
+    version<String>,
+    stage<String>,       // promote target stage (else "")
+    hash<String>         // content hash of the artifact (publish; else "")
+}
+
+// Serialize one operation to its canonical signed record form:
+//   op:<kind> | <name> | <version> [| stage:.. | hash:..]
+// into a Vec of chain Records (label = "op:<kind>", value = the rest) so each
+// block's first record identifies the operation.
+share(all)
+op_records(op<PkgOp>)<Vec<Record>> -> {
+    v<String> = op.name + "@" + op.version
+    if (op.stage.len() > 0) { v = v + "|" + op.stage }
+    if (op.hash.len() > 0) { v = v + "|" + op.hash }
+    r<Vec<Record>> = Vec()
+    r.push(Record { label = "op:" + op.kind, value = v })
+    return r
+}
+
+// Bootstrap the registry with a signed genesis: the registry identity/name and
+// a scheme marker. Returns the SignedChain whose genesis signer is the trust
+// root.
+share(all)
+registry_genesis(registry_id<String>, scheme<String>, seed<String>)<SignedChain> -> {
+    facts<Vec<Record>> = Vec()
+    facts.push(Record { label = "registry", value = registry_id })
+    facts.push(Record { label = "scheme", value = scheme })
+    return signed_genesis("vybforge/" + registry_id, facts, seed)
+}
+
+// Append a signed domain operation (records carried on one signed block).
+share(all)
+apply_op(sc<SignedChain>, op<PkgOp>, seed<String>)<SignedChain> -> {
+    return signed_append(sc, op_records(op), seed, seed)
+}
+
+// Authorized in-ledger signing-key ROTATION: the NEW key signs the replace_key
+// record while the CURRENT (old) key — `old_seed` — authorizes the handoff via
+// signed_append's rotation path. The registry's trust root (genesis signer)
+// is unchanged; the ACTIVE key for subsequent ops becomes `new_seed`'s.
+share(all)
+replace_key(sc<SignedChain>, new_seed<String>, old_seed<String>)<SignedChain> -> {
+    r<Vec<Record>> = Vec()
+    r.push(Record { label = "op:replace_key", value = "rotate" })
+    return signed_append(sc, r, new_seed, old_seed)
+}
+
+// The CURRENT active signing key: the signer of the last (tip) block. This is
+// the key that must sign the next operation for it to be authorized.
+share(all)
+active_key(sc<SignedChain>)<String> -> {
+    n<Int> = sc.signers.len()
+    if (n == 0) { return "" }
+    return sc.signers.get(n - 1)
+}
+
+// Deterministic registry state text derived by REPLAYING the ledger from
+// genesis. One line per fact, emitted in a canonical sort:
+//   a:name@version            published artifacts (in publish order)
+//   s:name@version=stage      current promotion stage (promote overwrites)
+//   x:name@version=revoked    revoked artifacts
+//   y:name@version=yanked     yanked artifacts.
+// Records inside a block already bind order (the core is order-binding), and
+// the sorted line set makes the derived root independent of block layout.
+share(all)
+replay_state(sc<SignedChain>)<String> -> {
+    active<Vec<String>> = Vec()
+    stages<Vec<String>> = Vec()
+    revoked<Vec<String>> = Vec()
+    yanked<Vec<String>> = Vec()
+    nb<Int> = sc.chain.blocks.len()
+    if (nb > 0) {
+        for (i in 1..nb - 1) {
+            b<Int> = i  // skip genesis (block 0)
+            r<Vec<Record>> = sc.chain.blocks.get(b).records
+            if (r.len() == 0) { continue }
+            op<Record> = r.get(0)
+            lbl<String> = op.label
+            val<String> = op.value
+            # "name@version" is the first segment up to '|' (stage/hash after)
+            id<String> = val
+            pipe<Int> = val.index_of("|")
+            if (pipe >= 0) { id = val.substring(0, pipe) }
+            rest<String> = ""
+            if (pipe >= 0 && pipe + 1 < val.len()) { rest = val.substring(pipe + 1, val.len()) }
+            if (lbl == "op:publish") {
+                active.push(id)
+            } else if (lbl == "op:promote") {
+                stages.push(id + "=" + rest)
+            } else if (lbl == "op:revoke") {
+                revoked.push(id)
+            } else if (lbl == "op:yank") {
+                yanked.push(id)
+            }
+        }
+    }
+    lines<Vec<String>> = Vec()
+    a<Int> = active.len()
+    if (a > 0) { for (i in 0..a - 1) { lines.push("a:" + active.get(i)) } }
+    st<Int> = stages.len()
+    if (st > 0) { for (i in 0..st - 1) { lines.push("s:" + stages.get(i)) } }
+    rv<Int> = revoked.len()
+    if (rv > 0) { for (i in 0..rv - 1) { lines.push("x:" + revoked.get(i)) } }
+    yk<Int> = yanked.len()
+    if (yk > 0) { for (i in 0..yk - 1) { lines.push("y:" + yanked.get(i)) } }
+    sl<Vec<String>> = lines.sorted()
+    s<String> = ""
+    m<Int> = sl.len()
+    if (m > 0) {
+        for (i in 0..m - 1) {
+            if (i > 0) { s = s + "; " }
+            s = s + sl.get(i)
+        }
+    }
+    return s
+}
+
+# The registry state root: sha256 of the replayed state text.
+share(all)
+state_root(sc<SignedChain>)<String> -> {
+    return sha256(replay_state(sc))
+}
+
+# True iff the ledger is AUTHENTIC (signed_verify with the registry pubkey as
+# the trust root) AND its derived state root equals `expected`.
+share(all)
+is_legit_ledger(sc<SignedChain>, expected_root<String>, registry_pub<String>)<Bool> -> {
+    if (!signed_verify(sc, registry_pub)) { return false }
+    return state_root(sc) == expected_root
+}
+
+# Checkpoint the registry's current tip for OFFLINE verification.
+share(all)
+sign_ledger_checkpoint(sc<SignedChain>, seed<String>)<String> -> {
+    return signed_chain_checkpoint_token(sc, seed)
+}
+share(all)
+verify_ledger_checkpoint(tip<String>, seq<Int>, registry_pub<String>, sig<String>)<Bool> -> {
+    return chain_verify_checkpoint(tip, seq, registry_pub, sig)
+}
+
+// ---- local aliases to keep the import surface small ---------------------
+share(all)
+signed_chain_checkpoint_token(sc<SignedChain>, seed<String>)<String> -> {
+    return sign_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), seed)
+}
+share(all)
+chain_verify_checkpoint(tip<String>, seq<Int>, registry_pub<String>, sig<String>)<Bool> -> {
+    return verify_checkpoint(tip, seq, registry_pub, sig)
+}

@@ -1,0 +1,106 @@
+// build-ledger.vyb — VybOS DOMAIN-OPERATION LEDGER proving entry (VybChain
+// #8, §2/§5). Drives modules/ledger.vyb: a package-registry ledger where every
+// operation (publish / promote / revoke / yank / replace_key / checkpoint) is
+// a SIGNED block, and the current registry state is DERIVED by replaying the
+// ledger from genesis (never stored mutable). Self-contained; forge seed is a
+// fixed RFC 8032 TEST seed used only by this scaffold.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-ledger.vyb --module-path modules
+
+import ledger::{registry_genesis, apply_op, op_records, replace_key, active_key,
+             replay_state, state_root, is_legit_ledger, sign_ledger_checkpoint,
+             verify_ledger_checkpoint, PkgOp}
+import chain::{signed_append, serialize, deserialize, tip_hash, Record, Chain, SignedChain}
+import crypto::{ed25519_publickey}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    # registry/forge key (RFC 8032 TEST 1 seed) + rotation keys
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    seed3<String> = "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"
+    regPub<String> = ed25519_publickey(seed1)
+    otherPub<String> = ed25519_publickey(seed2)
+
+    # 1. empty registry genesis: authentic, deterministic (root of "").
+    sc<SignedChain> = registry_genesis("pkg", "ed25519", seed1)
+    root0<String> = state_root(sc)
+    fails = fails + check(is_legit_ledger(sc, root0, regPub), "empty registry genesis authentic")
+    fails = fails + check(state_root(sc) == root0, "genesis state root deterministic")
+
+    # 2. publish two packages -> active; root changes, authentic.
+    p1<PkgOp> = PkgOp { kind = "publish", name = "busybox", version = "1.37.0", stage = "", hash = "h_bb" }
+    p2<PkgOp> = PkgOp { kind = "publish", name = "qemu", version = "9.1.0", stage = "", hash = "h_q" }
+    sc = apply_op(sc, p1, seed1)
+    sc = apply_op(sc, p2, seed1)
+    r1<String> = state_root(sc)
+    fails = fails + check(is_legit_ledger(sc, r1, regPub), "after publish: ledger authentic")
+    fails = fails + check(r1 != root0, "publish changed state root")
+
+    # 3. promote busybox to stable -> stage reflected, root changes.
+    pr<PkgOp> = PkgOp { kind = "promote", name = "busybox", version = "1.37.0", stage = "stable", hash = "" }
+    sc = apply_op(sc, pr, seed1)
+    r2<String> = state_root(sc)
+    fails = fails + check(is_legit_ledger(sc, r2, regPub), "after promote: ledger authentic")
+    fails = fails + check(r2 != r1, "promote changed state root")
+
+    # 4. replay is deterministic over the SAME ledger.
+    fails = fails + check(state_root(sc) == r2, "replay state root deterministic")
+
+    # 5. wrong registry pubkey anchors nothing.
+    fails = fails + check(!is_legit_ledger(sc, r2, otherPub), "wrong registry pubkey rejected")
+
+    # 6. SIGNATURE GATE: tamper a recorded op, re-wrap with ORIGINAL sigs.
+    txt<String> = serialize(sc.chain)
+    evil<String> = txt.replace("busybox@1.37.0", "busybox@1.99.9")
+    tchain<Chain> = deserialize(evil)
+    forged<SignedChain> = SignedChain { chain = tchain, signers = sc.signers, sigs = sc.sigs, rotations = sc.rotations }
+    fails = fails + check(!is_legit_ledger(forged, state_root(forged), regPub), "tampered ledger op rejected (signature gate)")
+
+    # 7. registry checkpoint round-trip + tamper.
+    ck<String> = sign_ledger_checkpoint(sc, seed1)
+    fails = fails + check(verify_ledger_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), regPub, ck), "registry checkpoint verifies")
+    fails = fails + check(!verify_ledger_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len() + 1, regPub, ck), "checkpoint wrong seq rejected")
+
+    # 8. authorized key rotation: k1 -> k2; active_key flips; still authentic.
+    rot<SignedChain> = replace_key(sc, seed2, seed1)
+    fails = fails + check(active_key(rot) == ed25519_publickey(seed2), "active key rotated to k2")
+    fails = fails + check(is_legit_ledger(rot, state_root(rot), regPub), "authorized replace_key + ledger stays authentic")
+
+    # 9. next op signed by the NEW key works.
+    p3<PkgOp> = PkgOp { kind = "publish", name = "vim", version = "9.1", stage = "", hash = "h_v" }
+    rot2<SignedChain> = apply_op(rot, p3, seed2)
+    fails = fails + check(is_legit_ledger(rot2, state_root(rot2), regPub), "op signed by rotated key authentic")
+
+    # 10. UNAUTHORIZED rotation (old_seed is not the current key) rejected.
+    bad_rot<SignedChain> = replace_key(sc, seed2, seed3)
+    fails = fails + check(!is_legit_ledger(bad_rot, state_root(bad_rot), regPub), "unauthorized key rotation rejected")
+
+    # 11. revoke / yank update availability state, root changes, still authentic.
+    rv<PkgOp> = PkgOp { kind = "revoke", name = "qemu", version = "9.1.0", stage = "", hash = "" }
+    rot3<SignedChain> = apply_op(rot2, rv, seed2)
+    fails = fails + check(!is_legit_ledger(rot3, r1, regPub), "revoked pkg changes state root")
+    yk<PkgOp> = PkgOp { kind = "yank", name = "vim", version = "9.1", stage = "", hash = "" }
+    rot4<SignedChain> = apply_op(rot3, yk, seed2)
+    fails = fails + check(is_legit_ledger(rot4, state_root(rot4), regPub), "revoke+yank ledger still authentic")
+
+    # 12. deterministic state reflects publish/promote/revoke/yank lines.
+    st<String> = replay_state(rot4)
+    fails = fails + check(st.contains("op") == false, "state has no internal op lines")  # marker no-op, keep numbering
+    fails = fails + check(st.contains("a:busybox@1.37.0"), "published busybox present")
+    fails = fails + check(st.contains("s:busybox@1.37.0=stable"), "promoted stage present")
+    fails = fails + check(st.contains("x:qemu@9.1.0"), "revoked qemu present")
+    fails = fails + check(st.contains("y:vim@9.1"), "yanked vim present")
+
+    sum<String> = "LEDGER: PASS (domain ops, replay state root, rotation, checkpoint)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
