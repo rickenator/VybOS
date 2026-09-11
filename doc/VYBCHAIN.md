@@ -32,7 +32,11 @@
 > `ok:all` only after trusted segment (via registry checkpoint) + artifact audit
 > against the ledger + state-root match; the realizer must realize nothing on any
 > other reason (proved by build/build-realizer-verify.vyb, 8 checks).
-> All six slices dogfood the same stdlib/chain SignedChain.
+> **End-to-end install** (`build/build-install.vyb`) ties the whole §5 flow into
+> one runnable command: plan (resolve) -> verify (ledger + gate) -> materialize
+> (realize_one writes store objects) -> record (seal §2 package record) ->
+> verify-store + rollback + tamper refusal (7 checks, all pass).
+> All seven slices dogfood the same stdlib/chain SignedChain.
 
 ## 1. What it is
 

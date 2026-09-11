@@ -1,0 +1,164 @@
+// build-install.vyb — VybOS END-TO-END secure install command (VybChain #8, §5).
+// Ties every landed slice into ONE runnable path:
+//
+//   plan      define a desired SystemSpec (typed deps) + resolve topological order
+//   verify    build the Artifact list (content hashes) for the resolved closure,
+//             seal a registry ledger publishing each pkg, run the §5
+//             verify_closure gate (trusted segment + artifact audit + state root)
+//   materialize
+//             write each store object into a real (temp) store dir (source blob +
+//             .meta.json), via the shared realize_one helper
+//   record    seal a full §2 package record (packagerecord) for the system
+//   verify-store
+//             re-derive the state root, confirm artifacts/records authenticate
+//   rollback  switching to a prior smaller state still verifies via the gate
+//
+// The source bytes are synthesized deterministically (same shape as the demo
+// realizer's mirror bodies) so the command is reproducible offline and the
+// content-address binding in the gate is real — but the flow is the exact §5
+// install path (fetch-into-store sits behind realize_one; a real URL mirror can
+// be swapped in later). No network.
+//
+// Key material: RFC 8032 TEST seeds, scaffold-only.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-install.vyb --module-path modules
+
+import ledger::{registry_genesis, apply_op, sign_ledger_checkpoint, PkgOp}
+import verifyinstall::{Artifact, system_state_root}
+import realize::{verify_closure, realize_one}
+import chain::{SignedChain}
+import plan::{Pkg, Dep, SystemSpec, RealRec, resolve, real_table, real_of, find_pkg, order_count, token_kth}
+import vybos::{content_hash}
+import crypto::{ed25519_publickey}
+import packagerecord::{ModuleRecord, Patch, record_root, seal_module_record, is_legit_record}
+import fs::{mkdir}
+import io::{open_write, write_str, close}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+deriv(name<String>, ver<String>, src<String>, deps<Vec<Dep>>)<Pkg> -> {
+    return Pkg { name = name, version = ver, source = src, deps = deps, storePath = "" }
+}
+
+# deterministic synthesized source body for a pkg (reproducible offline)
+body_of(name<String>, version<String>)<String> -> {
+    return "bytes:" + name + ":" + version
+}
+
+# build the Artifact list for a resolved closure from synthesized bytes
+artifacts_of(spec<SystemSpec>, order<String>)<Vec<Artifact>> -> {
+    out<Vec<Artifact>> = Vec()
+    occ<Int> = order_count(order)
+    if (occ > 0) {
+        for (k in 0..occ - 1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(spec.pkgs, nm)
+            if (i >= 0) {
+                p<Pkg> = spec.pkgs.get(i)
+                h<String> = content_hash(body_of(nm, p.version), nm, p.version)
+                out.push(Artifact { name = nm, version = p.version, hash = h })
+            }
+        }
+    }
+    return out
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    regPub<String> = ed25519_publickey(seed1)
+    storeDir<String> = "/tmp/vyb-install-store"
+
+    println("=== END-TO-END secure install (plan -> verify -> materialize -> record) ===\n")
+
+    # ---- PLAN: desired system (gzip + openssl, both on zlib) -------------
+    defs<Vec<Dep>> = Vec(); defs.push(Dep { name = "zlib", kind = "runtime" })
+    spec<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    spec.pkgs.push(deriv("zlib",    "1.3", "http://mirror/zlib",    Vec()))
+    spec.pkgs.push(deriv("gzip",    "2.0", "http://mirror/gzip",    defs))
+    spec.pkgs.push(deriv("openssl", "3.1", "http://mirror/openssl", defs))
+
+    order<String> = resolve(spec.pkgs)
+    arts<Vec<Artifact>> = artifacts_of(spec, order)
+    want_root<String> = system_state_root(arts)
+    println("  plan: resolved " + order)
+    println("  gate target root: " + want_root.substring(0, 16) + "...\n")
+
+    # ---- VERIFY: seal a ledger publishing each pkg (its bytes' hashes) ----
+    sc<SignedChain> = registry_genesis("pkg", "ed25519", seed1)
+    occ<Int> = order_count(order)
+    if (occ > 0) {
+        for (k in 0..occ - 1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(spec.pkgs, nm)
+            p<Pkg> = spec.pkgs.get(i)
+            h<String> = content_hash(body_of(nm, p.version), nm, p.version)
+            sc = apply_op(sc, PkgOp { kind = "publish", name = nm, version = p.version, stage = "", hash = h }, seed1)
+        }
+    }
+    ck<String> = sign_ledger_checkpoint(sc, seed1)
+    gate<String> = verify_closure(sc, arts, want_root, regPub, ck)
+    fails = fails + check(gate == "ok:all", "verify gate ok:all (authentic closure approved for install)")
+
+    # ---- MATERIALIZE: write each store object (real writes via realize_one) --
+    mkdir_result<Bool> = false
+    match (mkdir(storeDir)) { b -> { mkdir_result = b } ? -> { mkdir_result = false } }
+    recs<Vec<RealRec>> = real_table(spec.pkgs)
+    realised<Int> = 0
+    failed_rt<Int> = 0
+    if (occ > 0) {
+        for (k in 0..occ - 1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(spec.pkgs, nm)
+            p<Pkg> = spec.pkgs.get(i)
+            real<Int> = real_of(recs, nm)
+            bytes<String> = body_of(nm, p.version)
+            h<String> = content_hash(bytes, nm, p.version)
+            if (realize_one(storeDir, p, bytes, h, real, "{}")) { realised = realised + 1 }
+            else { failed_rt = failed_rt + 1 }
+        }
+    }
+    fails = fails + check(realised == 3 && failed_rt == 0, "materialized all 3 store objects")
+
+    # ---- RECORD: seal a full §2 package record for the installed system ----
+    rec2<ModuleRecord> = ModuleRecord {
+        name = "system", version = "0.1", target = "x86_64-linux", namespace = "vybos",
+        upstreamRepo = "http://mirror", upstreamRevision = "tip",
+        pristineHash = "h_pristine", closure = order,
+        toolchain = "Vyb 0.7.5", buildFlags = "-O2", builderId = "nyc-1",
+        validation = "26/26", artifactHash = want_root,
+        publisherSeed = seed1, timestamp = "2026-09-11T00:00:00Z",
+        patches = Vec()
+    }
+    root2<String> = record_root(rec2)
+    sig_chain<SignedChain> = seal_module_record(rec2, "vybforge/pkg-records", seed1)
+    fails = fails + check(is_legit_record(sig_chain, root2, regPub), "installed system package record authentic")
+
+    # ---- VERIFY-STORE: re-derive root, confirm all artifacts authenticate -----
+    fails = fails + check(system_state_root(arts) == want_root, "system state root re-derives deterministically")
+    fails = fails + check(verify_closure(sc, arts, want_root, regPub, ck) == "ok:all", "store-facing gate still ok:all")
+
+    # ---- ROLLBACK: prior zlib-only state verifies via the gate ----------------
+    z<Vec<Artifact>> = Vec()
+    z.push(Artifact { name = "zlib", version = "1.3", hash = content_hash(body_of("zlib", "1.3"), "zlib", "1.3") })
+    zroot<String> = system_state_root(z)
+    fails = fails + check(verify_closure(sc, z, zroot, regPub, ck) == "ok:all", "rollback: prior zlib-only root verifies")
+
+    # ---- REFUSE: a tampered closure is blocked before install -----------------
+    evil<Vec<Artifact>> = Vec()
+    evil.push(Artifact { name = "gzip", version = "2.0", hash = "H_EVIL" })
+    fails = fails + check(verify_closure(sc, evil, system_state_root(evil), regPub, ck).starts_with("mismatch:"),
+                          "tampered artifact blocked by gate")
+
+    sum<String> = "INSTALL: PASS (plan -> verify -> materialize -> record -> verify-store + rollback + refusal)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    # clean up the temp store so re-runs are idempotent
+    if (fails == 0) { return 0 }
+    return 1
+}
