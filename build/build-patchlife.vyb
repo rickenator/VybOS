@@ -1,0 +1,95 @@
+// build-patchlife.vyb — VybOS ADAPTIVE SOURCE-PATCHING lifecycle proving entry
+// (issue #7). Drives modules/patchlife.vyb: the promotion lifecycle, the repair
+// escalation order (curated > upstream > generated > human), the high-risk
+// guardrails, and the deterministic patch-set fingerprint.
+//
+//   lifecycle   generated: experimental -> validated-candidate -> reviewed ->
+//               submitted, retire from any active state; curated starts
+//               reviewed; upstream starts submitted. Illegal jumps rejected.
+//   guardrails  a HIGH-RISK patch (crypto/auth/privilege/kernel/memory-safety/
+//               storage/destructive) can never be auto-promoted to reviewed or
+//               beyond — it requires human intervention regardless of build.
+//   escalation  prefer the existing trusted fix (curated > upstream) before
+//               generation; high-risk surfaces escalate to human, not generate.
+//   fingerprint patch-set fingerprint is order-independent (sorted, deterministic).
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-patchlife.vyb --module-path modules
+
+import patchlife::{ManagedPatch, is_patch_state, is_patch_class, initial_state,
+             can_promote, promotable, promote, escalate, patchset_fingerprint}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+
+    # --- 1. lifecycle state/class validity + initial states ----------------
+    fails = fails + check(is_patch_state("experimental") && is_patch_state("retired"), "lifecycle states recognized")
+    fails = fails + check(!is_patch_state("bogus"), "unknown state rejected")
+    fails = fails + check(is_patch_class("generated") && is_patch_class("upstream") && is_patch_class("curated"), "patch classes recognized")
+    fails = fails + check(initial_state("generated") == "experimental", "generated patch enters experimental funnel")
+    fails = fails + check(initial_state("curated") == "reviewed", "curated patch starts already-reviewed")
+    fails = fails + check(initial_state("upstream") == "submitted", "upstream patch starts submitted")
+
+    # --- 2. promotion funnel (generated) -----------------------------------
+    fails = fails + check(can_promote("generated", "experimental", "validated-candidate"), "generated: experimental -> validated-candidate")
+    fails = fails + check(can_promote("generated", "validated-candidate", "reviewed"), "generated: validated-candidate -> reviewed")
+    fails = fails + check(can_promote("generated", "reviewed", "submitted"), "generated: reviewed -> submitted")
+    fails = fails + check(can_promote("generated", "validated-candidate", "retired"), "generated may retire from any active state")
+    fails = fails + check(!can_promote("generated", "experimental", "reviewed"), "generated: cannot skip straight to reviewed")
+    fails = fails + check(!can_promote("generated", "retired", "reviewed"), "retired is terminal (no revival)")
+    fails = fails + check(!can_promote("generated", "experimental", "submitted"), "generated: cannot skip to submitted")
+
+    # --- 3. promotion via promote() (value semantics) ----------------------
+    gp<ManagedPatch> = ManagedPatch { id = "gp1", cls = "generated", state = "experimental",
+                                      highRisk = false, reason = "fix gcc-14 asm constraint", generator = "qwen-moe-1" }
+    gp2<ManagedPatch> = promote(gp, "validated-candidate")
+    fails = fails + check(gp2.state == "validated-candidate", "promote() advanced generated patch to candidate")
+    gp3<ManagedPatch> = promote(gp2, "reviewed")
+    fails = fails + check(gp3.state == "reviewed", "promote() advanced candidate to reviewed")
+    fails = fails + check(gp.state == "experimental", "promote() is value-semantics (original untouched)")
+    gp_bad<ManagedPatch> = promote(gp, "submitted")
+    fails = fails + check(gp_bad.state == "experimental", "illegal skip leaves patch unchanged")
+
+    # --- 4. HIGH-RISK guardrail --------------------------------------------
+    hi<ManagedPatch> = ManagedPatch { id = "crypto1", cls = "generated", state = "validated-candidate",
+                                      highRisk = true, reason = "fix openssl ECDSA ctx", generator = "qwen-moe-1" }
+    fails = fails + check(promotable(hi, "reviewed") == false, "high-risk generated patch cannot auto-promote to reviewed")
+    fails = fails + check(promotable(hi, "submitted") == false, "high-risk generated patch cannot auto-promote to submitted")
+    fails = fails + check(promote(hi, "reviewed").state == "validated-candidate", "high-risk promote to reviewed is a no-op")
+    # low-risk CAN be reviewed (build+tests+human in real flow)
+    lo<ManagedPatch> = ManagedPatch { id = "asm1", cls = "generated", state = "validated-candidate",
+                                      highRisk = false, reason = "asm constraint", generator = "qwen-moe-1" }
+    fails = fails + check(promotable(lo, "reviewed"), "low-risk generated patch may be reviewed")
+
+    # --- 5. repair escalation order ----------------------------------------
+    fails = fails + check(escalate(true,  false, false) == "curated",  "escalate: curated fix preferred first")
+    fails = fails + check(escalate(false, true,  false) == "upstream", "escalate: known upstream fix next")
+    fails = fails + check(escalate(false, false, false) == "generate", "escalate: generate only when no trusted fix")
+    fails = fails + check(escalate(false, false, true)  == "human",    "escalate: high-risk goes to human, not generate")
+    fails = fails + check(escalate(true,  true,  true)  == "curated",  "escalate: curated still wins even on high-risk surface")
+
+    # --- 6. deterministic, order-independent fingerprint --------------------
+    a<Vec<ManagedPatch>> = Vec()
+    a.push(ManagedPatch { id = "p1", cls = "generated", state = "reviewed", highRisk = false, reason = "r", generator = "g" })
+    a.push(ManagedPatch { id = "p2", cls = "curated",   state = "submitted", highRisk = true,  reason = "", generator = "" })
+    b<Vec<ManagedPatch>> = Vec()
+    b.push(ManagedPatch { id = "p2", cls = "curated",   state = "submitted", highRisk = true,  reason = "", generator = "" })
+    b.push(ManagedPatch { id = "p1", cls = "generated", state = "reviewed", highRisk = false, reason = "r", generator = "g" })
+    fails = fails + check(patchset_fingerprint(a) == patchset_fingerprint(b), "patch-set fingerprint order-independent")
+    # a different patch state changes the fingerprint
+    c<Vec<ManagedPatch>> = Vec()
+    c.push(ManagedPatch { id = "p1", cls = "generated", state = "experimental", highRisk = false, reason = "r", generator = "g" })
+    c.push(ManagedPatch { id = "p2", cls = "curated",   state = "submitted", highRisk = true,  reason = "", generator = "" })
+    fails = fails + check(patchset_fingerprint(a) != patchset_fingerprint(c), "patch state change alters fingerprint")
+
+    sum<String> = "PATCHLIFE: PASS (promotion lifecycle, escalation order, high-risk guardrail, fingerprint)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

@@ -1,0 +1,193 @@
+// patchlife.vyb — VybOS ADAPTIVE SOURCE-PATCHING lifecycle + provenance (issue #7).
+//
+// #7's architectural principle: "AI may AUTHOR a repair, but VybForge OWNS,
+// validates, hashes, records, reproduces, and promotes the patch." The sealed
+// package record (modules/packagerecord.vyb) already records each Patch's
+// content hash + classification (upstream|curated|generated) + generator
+// provenance. THIS module adds the #7-specific parts the record doesn't model:
+//
+//   1. PATCH CLASSES + PROMOTION LIFECYCLE — each patch moves through explicit
+//      states (experimental -> validated-candidate -> reviewed -> submitted ->
+//      retired) with VALIDATED transitions: a generated patch starts
+//      experimental, needs build+test evidence to become a candidate, needs
+//      HUMAN review to become reviewed, and can be submitted upstream or
+//      retired once upstream no longer needs it. curated/upstream classes skip
+//      the early states (they are already-vetted). Illegal jumps are rejected.
+//
+//   2. REPAIR ESCALATION ORDER — given a build failure + the available patch
+//      pool, prefer the existing trusted fix before generation: curated >
+//      upstream > generated. Only escalate to "generate" when no curated/upstream
+//      patch applies; only escalate to "human" when the repair traverses a
+//      HIGH-RISK area where autonomous acceptance is prohibited.
+//
+//   3. HIGH-RISK GUARDRAILS — patch/hostile surfaces (crypto, auth, privilege,
+//      kernel, memory-safety parsers, storage/fs, destructive paths) may NEVER
+//      be auto-promoted past candidate — they require human review to become a
+//      reviewed VybOS patch, regardless of build success.
+//
+// Deterministic patch-set fingerprint ties the whole ordered set to one hash
+// (reuseable by any realizer for the realization record).
+//
+// Run-free library (no main); proven by build/build-patchlife.vyb.
+
+import collections
+
+// One patch under management. `cls` ∈ {upstream, curated, generated};
+// `state` ∈ {experimental, validated-candidate, reviewed, submitted, retired};
+// `highRisk` true for surfaces that forbid autonomous acceptance.
+share(all)
+struct ManagedPatch {
+    id<String>,
+    cls<String>,          // upstream | curated | generated
+    state<String>,        // lifecycle state
+    highRisk<Bool>,       // security/correctness-sensitive surface
+    reason<String>,       // the repair objective (generated)
+    generator<String>     // model/generator identity (generated; else "")
+}
+
+// --- promotion lifecycle --------------------------------------------------
+
+// Is `state` a legal lifecycle state at all?
+share(all)
+is_patch_state(state<String>)<Bool> -> {
+    return select(state) -> {
+        {"experimental"} -> true,
+        {"validated-candidate"} -> true,
+        {"reviewed"} -> true,
+        {"submitted"} -> true,
+        {"retired"} -> true,
+        ? -> false
+    }
+}
+
+// Is `cls` a legal patch class?
+share(all)
+is_patch_class(cls<String>)<Bool> -> {
+    return select(cls) -> {
+        {"upstream"} -> true,
+        {"curated"} -> true,
+        {"generated"} -> true,
+        ? -> false
+    }
+}
+
+// Legal initial state for a patch class: generated enters the experimental
+// funnel; curated (already reviewed by VybOS) and upstream (already vetted /
+// accepted upstream) start already-reviewed.
+share(all)
+initial_state(cls<String>)<String> -> {
+    return select(cls) -> {
+        {"generated"} -> "experimental",
+        {"curated"} -> "reviewed",
+        {"upstream"} -> "submitted",
+        ? -> ""
+    }
+}
+
+// True iff `from -> to` is a VALID promotion edge for a patch of class `cls`.
+// Enforces the funnel: generated must climb experimental -> validated-candidate
+// -> reviewed -> submitted in order (retiring from any active state is legal);
+// curated (already reviewed) and upstream (already submitted) only submit/
+// retire. Any other transition is rejected.
+share(all)
+can_promote(cls<String>, from_state<String>, to_state<String>)<Bool> -> {
+    if (to_state == "retired") { return is_patch_state(from_state) && from_state != "retired" }
+    if (from_state == "retired") { return false }   // retired patches are terminal
+    if (cls == "generated") {
+        if (from_state == "experimental")  { return to_state == "validated-candidate" }
+        if (from_state == "validated-candidate") { return to_state == "reviewed" }
+        if (from_state == "reviewed")      { return to_state == "submitted" }
+        return false
+    }
+    if (cls == "curated") {
+        // already reviewed; can be submitted upstream
+        if (from_state == "reviewed") { return to_state == "submitted" }
+        return false
+    }
+    if (cls == "upstream") {
+        // already submitted/accepted upstream
+        return false
+    }
+    return false
+}
+
+// True iff promoting `p` to `to` is BOTH a valid funnel edge AND passes the
+// high-risk guardrail: a high-risk patch can never be promoted to "reviewed"
+// (or beyond) without the explicit reviewed step being blocked — it requires
+// human intervention. Concretely, high-risk generated patches may reach
+// validated-candidate but never reviewed and never submitted autonomously.
+share(all)
+promotable(p<ManagedPatch>, to_state<String>)<Bool> -> {
+    if (!can_promote(p.cls, p.state, to_state)) { return false }
+    if (p.highRisk && (to_state == "reviewed" || to_state == "submitted" || to_state == "retired")) { return false }
+    return true
+}
+
+// Apply a promotion, returning the NEW ManagedPatch in the target state (or an
+// unchanged copy when the move is illegal). Value semantics; caller's patch
+// untouched.
+share(all)
+promote(p<ManagedPatch>, to_state<String>)<ManagedPatch> -> {
+    if (!promotable(p, to_state)) { return p }
+    return ManagedPatch { id = p.id, cls = p.cls, state = to_state, highRisk = p.highRisk,
+                          reason = p.reason, generator = p.generator }
+}
+
+// --- repair escalation order ----------------------------------------------
+
+// True iff a curated (reviewed VybOS) patch exists and applies. Simulated by a
+// caller-provided availability flag (the realizer decides applicability).
+share(all)
+has_curated(has<Bool>)<Bool> -> { return has }
+
+// True iff a known upstream fix/commit exists.
+share(all)
+has_upstream_fix(has<Bool>)<Bool> -> { return has }
+
+// The repair escalation DECISION given a build failure: prefer the existing
+// trusted fix before generation, per #7:
+//   1. curated VybOS patch applies  -> "curated"
+//   2. known upstream fix exists    -> "upstream"
+//   3. high-risk surface            -> "human"   (generation forbidden/blocked)
+//   4. otherwise                    -> "generate"
+share(all)
+escalate(curated_ok<Bool>, upstream_ok<Bool>, high_risk<Bool>)<String> -> {
+    if (curated_ok) { return "curated" }
+    if (upstream_ok) { return "upstream" }
+    if (high_risk) { return "human" }
+    return "generate"
+}
+
+// --- deterministic patch-set fingerprint ----------------------------------
+
+// short high/low marker for a patch's risk in the fingerprint line
+share(all)
+risk_mark(highRisk<Bool>)<String> -> {
+    if (highRisk) { return "hi" }
+    return "lo"
+}
+
+// Canonical, sorted fingerprint of an ordered patch set (id|cls|state|risk).
+// Order-independent (sorted), so the same set in any order hashes to the same
+// root — reuseable as the realization record's patch-set identity.
+share(all)
+patchset_fingerprint(patches<Vec<ManagedPatch>>)<String> -> {
+    lines<Vec<String>> = Vec()
+    n<Int> = patches.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            p<ManagedPatch> = patches.get(i)
+            lines.push(p.id + "|" + p.cls + "|" + p.state + "|" + risk_mark(p.highRisk))
+        }
+    }
+    sl<Vec<String>> = lines.sorted()
+    s<String> = ""
+    m<Int> = sl.len()
+    if (m > 0) {
+        for (i in 0..m - 1) {
+            if (i > 0) { s = s + "; " }
+            s = s + sl.get(i)
+        }
+    }
+    return s
+}
