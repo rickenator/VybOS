@@ -4,6 +4,16 @@
 > `rickenator/VybOS` issue **#8** (spec + acceptance criteria) and **#7**
 > (adaptive source patching / provenance — the VybForge-side half). This doc
 > is the VybOS-side design, tracking, and current-status record.
+>
+> **STATUS 2026-09-11:** the signature layer is LIVE. Vyb stdlib/chain now has
+> `SignedChain` (+ `signed_genesis/signed_append/signed_verify`, in-ledger key
+> rotation, `sign/verify_checkpoint`) back by stdlib/crypto Ed25519 (RFC 8032
+> verified). VybOS `modules/bootlegit` now offers AUTHENTIC boot legitimization:
+> `seal_boot_signed` / `is_legit_signed` (registry-root anchored, signature-gate
+> tamper rejection) + `sign/verify_boot_checkpoint`, proven by
+> `build/build-bootlegit-signed.vyb` (all 8 checks pass). Next: wire the same
+> into VybForge `forge_legit` (provenance records) and the store's index
+> signing.
 
 ## 1. What it is
 

@@ -1,0 +1,78 @@
+// build-bootlegit-signed.vyb — VybOS AUTHENTIC boot legitimization proving
+// entry (VybChain signature layer). Self-contained (synthetic sealed facts):
+// dogfoods modules/bootlegit.vyb's signed path against the issuer/registry key,
+// and proves authenticity, not just the integrity of the plain chain:
+//
+//   1. seal_boot_signed(...) with the ISSUER seed -> a SignedChain;
+//   2. is_legit_signed(sc, issuer_pub)       -> TRUE (authentic boot);
+//   3. wrong registry pubkey                 -> FALSE (root anchoring);
+//   4. a record edited on disk, re-wrapped with the ORIGINAL signatures
+//      -> FALSE (the SIGNATURE gate: contents changed but sigs still cover the
+//         old hashes);
+//   5. a boot signed by a DIFFERENT issuer   -> FALSE;
+//   6. an UNAUTHORIZED key rotation (old key != previous signer) -> FALSE,
+//      and an AUTHORIZED rotation -> still TRUE;
+//   7. registry checkpoint (seq,tip): sign+verify TRUE; tampered seq -> FALSE.
+//
+// Key material (issuer seed) is a fixed RFC 8032 TEST seed used ONLY by this
+// test scaffold — it never lives in the runtime modules.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-bootlegit-signed.vyb --module-path modules
+
+import bootlegit::{seal_boot_signed, is_legit_signed, sign_boot_checkpoint, verify_boot_checkpoint}
+import chain::{serialize, deserialize, signed_append, tip_hash, Record, Chain, ChainBlock, SignedChain}
+import crypto::{ed25519_publickey}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    # issuer/registry key (RFC 8032 TEST 1 seed) and a second key for rotation
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    seed3<String> = "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"
+    regPub<String> = ed25519_publickey(seed1)
+    otherPub<String> = ed25519_publickey(seed2)
+
+    # 1. authentic signed boot
+    sc<SignedChain> = seal_boot_signed("gen-a1", "k_hash_aa", "r_hash_bb", "VYBOS_READY", seed1)
+    fails = fails + check(is_legit_signed(sc, regPub), "signed boot authentic (issuer key)")
+
+    # 2. wrong registry root anchors nothing
+    fails = fails + check(!is_legit_signed(sc, otherPub), "wrong registry pubkey rejected")
+
+    # 3. SIGNATURE gate: tamper the records on disk, keep the ORIGINAL sigs
+    txt<String> = serialize(sc.chain)
+    evil<String> = txt.replace("VYBOS_READY", "FORGED_READY")
+    tchain<Chain> = deserialize(evil)
+    forged<SignedChain> = SignedChain { chain = tchain, signers = sc.signers, sigs = sc.sigs, rotations = sc.rotations }
+    fails = fails + check(!is_legit_signed(forged, regPub), "tampered signed boot rejected (signature gate)")
+
+    # 4. a boot signed by a DIFFERENT issuer
+    sc_other<SignedChain> = seal_boot_signed("gen-a1", "k_hash_aa", "r_hash_bb", "VYBOS_READY", seed2)
+    fails = fails + check(!is_legit_signed(sc_other, regPub), "boot by wrong issuer rejected")
+
+    # 5. registry checkpoint round-trip + tamper
+    ck<String> = sign_boot_checkpoint(sc, seed1)
+    fails = fails + check(verify_boot_checkpoint(tip_hash(sc.chain), 2, regPub, ck), "boot checkpoint verifies")
+    fails = fails + check(!verify_boot_checkpoint(tip_hash(sc.chain), 3, regPub, ck), "checkpoint with wrong seq rejected")
+
+    # 6. key rotation: AUTHORIZED (k1 -> k2 with old_seed=k1) stays authentic
+    rot_facts<Vec<Record>> = Vec()
+    rot_facts.push(Record { label = "event", value = "key-rotation" })
+    rot<SignedChain> = signed_append(sc, rot_facts, seed2, seed1)
+    fails = fails + check(is_legit_signed(rot, regPub), "authorized in-ledger key rotation still authentic")
+    # UNAUTHORIZED rotation (old_seed = k3, not the actual previous key) rejected
+    bad<SignedChain> = signed_append(sc, rot_facts, seed2, seed3)
+    fails = fails + check(!is_legit_signed(bad, regPub), "unauthorized key rotation rejected")
+
+    sum<String> = "BOOT-LEGIT-SIGNED: PASS (authenticity, rotation, checkpoint)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

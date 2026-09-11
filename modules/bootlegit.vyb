@@ -24,7 +24,8 @@
 // this slice is integrity.
 
 import chain::{new_chain, append, verify, tip_hash, contains, serialize, deserialize,
-             Record}
+             signed_genesis, signed_append, signed_verify, sign_checkpoint,
+             verify_checkpoint, Record, Chain, SignedChain}
 
 // Seal the boot identity: a genesis block of the measured artifacts, then an
 // append block recording that boot reached the READY marker (the boot event).
@@ -64,4 +65,59 @@ boot_token(c<Chain>)<String> -> {
 share(all)
 receipt(c<Chain>)<String> -> {
     return serialize(c)
+}
+
+// ---------------------------------------------------------------------------
+// SIGNED boot legitimization (VybChain authenticity). The plain `seal_boot`
+// chain above is integrity-only — its `vybos/boot` origin is a shared constant
+// anyone can forge. The signed variants anchor the boot to a REAL issuer key:
+// every block is Ed25519-signed (stdlib/chain SignedChain, OpenSSL EVP), the
+// genesis signer must equal the registry/issuer public key, and key rotation is
+// authorized in-ledger. The module NEVER embeds key material: the caller (the
+// registry/operator) supplies the issuer `seed` out-of-band, matching the
+// project rule that seeds live only in tests/scaffolds, never the runtime.
+// ---------------------------------------------------------------------------
+
+// Seal the boot identity into a SIGNED chain: a signed genesis of the measured
+// artifacts, then a signed append recording the boot-complete event. `seed` is
+// the issuer/registry Ed25519 seed.
+share(all)
+seal_boot_signed(gen_id<String>, kernel_hash<String>, rootfs_hash<String>,
+                 ready_marker<String>, seed<String>)<SignedChain> -> {
+    facts<Vec<Record>> = Vec()
+    facts.push(Record { label = "generation", value = gen_id })
+    facts.push(Record { label = "kernel", value = kernel_hash })
+    facts.push(Record { label = "rootfs", value = rootfs_hash })
+    facts.push(Record { label = "marker", value = ready_marker })
+    base<SignedChain> = signed_genesis("vybos/boot", facts, seed)
+    ev<Vec<Record>> = Vec()
+    ev.push(Record { label = "event", value = "boot-complete" })
+    ev.push(Record { label = "ready", value = ready_marker })
+    return signed_append(base, ev, seed, seed)
+}
+
+// True iff the signed boot is AUTHENTIC (not just internally consistent):
+//   - signed_verify: block integrity, every block signature, genesis signer ==
+//     the registry/issuer public key, and (in-ledger) key-rotation handoffs;
+//   - the origin is a vybos/boot chain;
+//   - the boot-complete event was sealed.
+share(all)
+is_legit_signed(sc<SignedChain>, registry_pub<String>)<Bool> -> {
+    if (!signed_verify(sc, registry_pub)) { return false }
+    if (!sc.chain.origin.contains("vybos/boot")) { return false }
+    return contains(sc.chain, "event", "boot-complete")
+}
+
+// Registry-signed checkpoint for this boot: signs (seq = block count, tip)
+// with the issuer seed. An external verifier holding ONLY the registry public
+// key can validate the boot tip without the full ledger (offline checkpoints).
+share(all)
+sign_boot_checkpoint(sc<SignedChain>, seed<String>)<String> -> {
+    return sign_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), seed)
+}
+
+// Validate a boot checkpoint signature over (tip, seq) with the registry key.
+share(all)
+verify_boot_checkpoint(tip<String>, seq<Int>, registry_pub<String>, sig<String>)<Bool> -> {
+    return verify_checkpoint(tip, seq, registry_pub, sig)
 }
