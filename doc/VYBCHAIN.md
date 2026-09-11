@@ -22,7 +22,12 @@
 > trusted chain segment via registry checkpoint -> artifact audit (published,
 > not revoked/yanked, content hash == ledger record) -> construct+verify the
 > system state root -> roll back to a prior verified root (13 checks prove it).
-> All five slices dogfood the same stdlib/chain SignedChain.
+> The **Phase-2 package record** (`modules/packagerecord.vyb`) seals the full §2
+> record — identity, derivation (pristine hash + closure), ordered patches with
+> generated-patch generator provenance, toolchain/flags/builder/validation,
+> artifact hash, publisher Ed25519 signature + timestamp — as AUTHENTIC signed
+> records with a deterministic record root (14 checks prove it).
+> All six slices dogfood the same stdlib/chain SignedChain.
 
 ## 1. What it is
 

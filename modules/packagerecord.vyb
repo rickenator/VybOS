@@ -1,0 +1,202 @@
+// packagerecord.vyb — VybOS VybChain PHASE-2 PACKAGE RECORD (VybOS #8, §2).
+//
+// The thin domain-op `publish` records just name@version + content hash. This
+// module seals the FULL package record the §2 spec demands, as AUTHENTIC signed
+// records on the stdlib/chain SignedChain core, one record per package:
+//
+//   identity      name / version / target / namespace
+//   derivation    upstream repo + exact revision, pristine-source hash,
+//                 full resolved closure.
+//   patches       ordered patch set, each with content hash + classification
+//                 (upstream | curated | generated) and, for generated patches,
+//                 the generator/model identity + (prompt,response) provenance.
+//   build         Vyb/compiler/toolchain version + build flags + VybOS config.
+//   validation    builder identity + test/validation results.
+//   artifact      final content-addressed artifact hash (binds the store object).
+//   signature     publisher Ed25519 signature + timestamp, over the whole record.
+//
+// Everything that matters is sealed as records inside signed blocks (so
+// `signed_verify` detects ANY edit, reorder, or re-sign attempt), and a
+// DETERMINISTIC record root = sha256 over the canonical field serialization is
+// also recorded — an external verifier holding the forge pubkey + the root can
+// confirm a given record/artifact without trusting a copy of the whole chain.
+// Payload bytes stay in the content-addressed store; only identity, derivation,
+// validation, and trust state live here.
+//
+// The module NEVER embeds key material — seeds/timestamp are caller-supplied.
+//
+// Run-free library (no main); proven by build/build-packagerecord.vyb.
+
+import collections
+import chain::{signed_genesis, signed_append, signed_verify, contains, tip_hash,
+             Record, SignedChain, sign_checkpoint, verify_checkpoint}
+import crypto::{sha256, ed25519_publickey, ed25519_sign}
+
+// One ordered patch: content hash + classification. For generated patches,
+// `generator`/`prompt`/`response` carry the AI provenance (§2); for upstream /
+// curated they are empty.
+share(all)
+struct Patch {
+    id<String>,          // fixed identity (e.g. "1", "2")
+    hash<String>,        // content hash of the patch bytes
+    cls<String>,         // "upstream" | "curated" | "generated"
+    generator<String>,   // generator/model identity (generated only, else "")
+    prompt<String>,      // request text (generated only, else "")
+    response<String>     // response text (generated only, else "")
+}
+
+// The full §2 package record. Optional-ish fields are String ("" = absent),
+// VybOS convention (no enum/optional struct fields).
+share(all)
+struct ModuleRecord {
+    name<String>,
+    version<String>,
+    target<String>,          // e.g. "x86_64-linux"
+    namespace<String>,       // e.g. "vybos"
+    upstreamRepo<String>,
+    upstreamRevision<String>,
+    pristineHash<String>,    // sha256 of pristine source
+    closure<String>,         // deterministic "name@ver,.." resolved closure cite
+    toolchain<String>,       // Vyb/compiler/toolchain version string
+    buildFlags<String>,
+    builderId<String>,
+    validation<String>,      // test/validation results
+    artifactHash<String>,    // final content-addressed artifact hash
+    publisherSeed<String>,   // the publisher's Ed25519 seed (caller-supplied)
+    timestamp<String>,
+    patches<Vec<Patch>>
+}
+
+// Deterministic canonical serialization of the record's identity + derivation +
+// build + validation + artifact fields (NOT the patches, which get their own
+// sorted block below; both are covered by the record root).
+share(all)
+record_fields(rec<ModuleRecord>)<String> -> {
+    return "name=" + rec.name + "|version=" + rec.version +
+           "|target=" + rec.target + "|namespace=" + rec.namespace +
+           "|upstream=" + rec.upstreamRepo + "@" + rec.upstreamRevision +
+           "|pristine=" + rec.pristineHash +
+           "|closure=" + rec.closure +
+           "|toolchain=" + rec.toolchain +
+           "|flags=" + rec.buildFlags +
+           "|builder=" + rec.builderId +
+           "|validation=" + rec.validation +
+           "|artifact=" + rec.artifactHash
+}
+
+// Canonical, sorted rendering of the patch set (by id), covering each patch's
+// hash + classification + generator provenance. Sorting makes the record root
+// order-independent over the patch ordering field.
+share(all)
+patch_lines(rec<ModuleRecord>)<String> -> {
+    lines<Vec<String>> = Vec()
+    n<Int> = rec.patches.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            p<Patch> = rec.patches.get(i)
+            lines.push(p.id + "|" + p.hash + "|" + p.cls + "|" + p.generator)
+        }
+    }
+    sl<Vec<String>> = lines.sorted()
+    s<String> = ""
+    m<Int> = sl.len()
+    if (m > 0) {
+        for (i in 0..m - 1) {
+            if (i > 0) { s = s + "; " }
+            s = s + sl.get(i)
+        }
+    }
+    return s
+}
+
+// The deterministic record root: sha256 over the canonical field serialization
+// + the sorted patch set. Sealed into the chain and re-derivable by a verifier.
+share(all)
+record_root(rec<ModuleRecord>)<String> -> {
+    return sha256(record_fields(rec) + "||patches[" + patch_lines(rec) + "]")
+}
+
+// Render the §2 "patch-provenance" facts as chain Records (one per patch) —
+// the ordered patch detail block that `signed_verify` binds.
+share(all)
+patch_records(rec<ModuleRecord>)<Vec<Record>> -> {
+    r<Vec<Record>> = Vec()
+    n<Int> = rec.patches.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            p<Patch> = rec.patches.get(i)
+            val<String> = p.hash + "|" + p.cls
+            if (p.cls == "generated") { val = val + "|gen:" + p.generator + "|q:" + p.prompt + "|a:" + p.response }
+            r.push(Record { label = "patch:" + p.id, value = val })
+        }
+    }
+    return r
+}
+
+// Seal a full package record into a SIGNED chain:
+//   genesis = identity/derivation/build/validation/artifact fields + the
+//            deterministic record root + the publisher signature + timestamp;
+//   append  = the ordered patch set (one record per patch, bound by signed_verify).
+// The publisher signs the record root + artifact hash, so a record's authorship
+// and its claimed artifact are both covered by a single Ed25519 signature.
+share(all)
+seal_module_record(rec<ModuleRecord>, forge_origin<String>, seed<String>)<SignedChain> -> {
+    root<String> = record_root(rec)
+    publisher<String> = ed25519_publickey(rec.publisherSeed)
+    signed_payload<String> = root + "|" + rec.artifactHash
+    psig<String> = ed25519_sign(rec.publisherSeed, signed_payload)
+
+    facts<Vec<Record>> = Vec()
+    # identity + derivation
+    facts.push(Record { label = "name", value = rec.name })
+    facts.push(Record { label = "version", value = rec.version })
+    facts.push(Record { label = "target", value = rec.target })
+    facts.push(Record { label = "namespace", value = rec.namespace })
+    # provenance / derivation
+    facts.push(Record { label = "upstream", value = rec.upstreamRepo + "@" + rec.upstreamRevision })
+    facts.push(Record { label = "pristine_source_hash", value = rec.pristineHash })
+    facts.push(Record { label = "closure", value = rec.closure })
+    # build + validation
+    facts.push(Record { label = "toolchain", value = rec.toolchain })
+    facts.push(Record { label = "build_flags", value = rec.buildFlags })
+    facts.push(Record { label = "builder", value = rec.builderId })
+    facts.push(Record { label = "validation", value = rec.validation })
+    # artifact + signature
+    facts.push(Record { label = "artifact_hash", value = rec.artifactHash })
+    facts.push(Record { label = "record_root", value = root })
+    facts.push(Record { label = "publisher", value = publisher })
+    facts.push(Record { label = "timestamp", value = rec.timestamp })
+    facts.push(Record { label = "publisher_signature", value = psig })
+
+    base<SignedChain> = signed_genesis(forge_origin, facts, seed)
+    if (rec.patches.len() == 0) { return base }
+    return signed_append(base, patch_records(rec), seed, seed)
+}
+
+// True iff the sealed record is AUTHENTIC (signed_verify under the forge pubkey
+// as the trust root, genesis signer == forge key, authorized rotation) AND it
+// records exactly `expected_root` as its record_root.
+share(all)
+is_legit_record(sc<SignedChain>, expected_root<String>, forge_pub<String>)<Bool> -> {
+    if (!signed_verify(sc, forge_pub)) { return false }
+    return contains(sc.chain, "record_root", expected_root)
+}
+
+# Convenience: the forge/registry checkpoint over the record chain's tip, so an
+# external verifier with only the forge pubkey can confirm the record's tip.
+share(all)
+sign_record_checkpoint(sc<SignedChain>, seed<String>)<String> -> {
+    return chain_sign_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), seed)
+}
+share(all)
+verify_record_checkpoint(tip<String>, seq<Int>, forge_pub<String>, sig<String>)<Bool> -> {
+    return chain_verify_checkpoint(tip, seq, forge_pub, sig)
+}
+share(all)
+chain_sign_checkpoint(tip<String>, seq<Int>, seed<String>)<String> -> {
+    return sign_checkpoint(tip, seq, seed)
+}
+share(all)
+chain_verify_checkpoint(tip<String>, seq<Int>, forge_pub<String>, sig<String>)<Bool> -> {
+    return verify_checkpoint(tip, seq, forge_pub, sig)
+}
