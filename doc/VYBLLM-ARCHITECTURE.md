@@ -99,7 +99,9 @@ on-demand reload.
 
 1. **Create `Vyb/stdlib/vllm/`** — relocate the engine pieces from VybForge
    `native/` into the stdlib module behind the `llm.vyb` facade. No behavior
-   change.
+   change. **[DONE — checkpoint 1: tokenizer landed as PR #242, stdlib/vllm/
+   mod.vyb, artifact paths decoupled behind `VYB_LLM_DIR`; relocated algorithm
+   verified exact cross-repo from VybForge; Vyb suite 1147/1147]**
 2. **Keep VybForge green** — VybForge imports `stdlib/vllm` (via the Vyb
    stdlib it already uses), so `make -f native/Makefile verify` keeps passing —
    proving a pure relocate, not a rewrite.
