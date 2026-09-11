@@ -1,0 +1,103 @@
+// build-storeindex-signed.vyb — VybOS AUTHENTIC store-index signing proving
+// entry (VybChain signature layer, VybOS #8). Self-contained (synthetic store
+// objects dogfooding modules/storeindex.vyb's signed path against the
+// forge/registry key):
+//
+//   1. seal_store_index_signed(...) with the FORGE seed -> a SignedChain whose
+//      state_root equals the deterministic root recomputed from the objects;
+//   2. is_legit_store(sc, root, forge_pub)          -> TRUE (authentic index);
+//   3. wrong forge pubkey                            -> FALSE (root anchoring);
+//   4. a store object's content hash tampered on disk, chain re-wrapped with
+//      the ORIGINAL signatures -> FALSE (the SIGNATURE gate: the sealed
+//      state_root no longer equals the index's real root);
+//   5. an object added to the store (index content changes) -> root differs,
+//      so a chain sealed over the OLD index rejects the NEW root;
+//   6. an index signed by a DIFFERENT forge key    -> FALSE;
+//   7. an UNAUTHORIZED key rotation (old key != previous signer) -> FALSE, and
+//      an AUTHORIZED rotation -> still TRUE;
+//   8. registry checkpoint (seq,tip): sign+verify TRUE; wrong seq -> FALSE.
+//
+// Key material (forge seed) is a fixed RFC 8032 TEST seed used ONLY by this
+// test scaffold — it never lives in the runtime modules.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-storeindex-signed.vyb --module-path modules
+
+import storeindex::{store_object, store_state_root, seal_store_index_signed,
+             is_legit_store, sign_store_checkpoint, verify_store_checkpoint,
+             StoreObject}
+import chain::{serialize, deserialize, signed_append, tip_hash, Record, Chain, SignedChain}
+import crypto::{ed25519_publickey}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    # forge/registry key (RFC 8032 TEST 1 seed) and two more for rotation
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    seed3<String> = "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"
+    forgePub<String> = ed25519_publickey(seed1)
+    otherPub<String> = ed25519_publickey(seed2)
+    origin<String> = "vybforge/store-1"
+
+    # a small, deterministic store: three content-addressed objects
+    o1<StoreObject> = store_object("busybox", "1.37.0", "busybox-binary-bytes-v1")
+    o2<StoreObject> = store_object("qemu", "9.1.0", "qemu-binary-bytes-v1")
+    o3<StoreObject> = store_object("linux", "6.12.0", "linux-kernel-bytes-v1")
+    objs<Vec<StoreObject>> = Vec(); objs.push(o1); objs.push(o2); objs.push(o3)
+    root<String> = store_state_root(objs)
+
+    # 1. authentic signed store index
+    sc<SignedChain> = seal_store_index_signed(objs, origin, seed1)
+    fails = fails + check(is_legit_store(sc, root, forgePub), "signed store index authentic (forge key)")
+
+    # 2. wrong forge/registry root anchors nothing
+    fails = fails + check(!is_legit_store(sc, root, otherPub), "wrong forge pubkey rejected")
+
+    # 3. SIGNATURE gate: a store object's content is tampered ON DISK, and the
+    #    chain is re-wrapped with the ORIGINAL signatures. The sealed state_root
+    #    (old data) no longer equals the index's real root (new data) -> reject.
+    objs2<Vec<StoreObject>> = Vec(); objs2.push(o1); objs2.push(o2)
+    objs2.push(store_object("linux", "6.12.0", "linux-kernel-bytes-EVIL"))
+    root2<String> = store_state_root(objs2)
+    txt<String> = serialize(sc.chain)
+    tchain<Chain> = deserialize(txt)
+    forged<SignedChain> = SignedChain { chain = tchain, signers = sc.signers, sigs = sc.sigs, rotations = sc.rotations }
+    fails = fails + check(!is_legit_store(forged, root2, forgePub), "tampered store object rejected (root mismatch)")
+
+    # 4. an object added to the store -> NEW root; a chain sealing the OLD root
+    #    must NOT pass for the new store state.
+    objs4<Vec<StoreObject>> = Vec(); objs4.push(o1); objs4.push(o2); objs4.push(o3)
+    objs4.push(store_object("vim", "9.1", "vim-binary-bytes-v1"))
+    root4<String> = store_state_root(objs4)
+    fails = fails + check(root4 != root, "store changed -> state root differs")
+    fails = fails + check(!is_legit_store(sc, root4, forgePub), "chain sealed over old store rejects new store root")
+
+    # 5. index sealed by a DIFFERENT forge key
+    sc_other<SignedChain> = seal_store_index_signed(objs, origin, seed2)
+    fails = fails + check(!is_legit_store(sc_other, root, forgePub), "index by wrong forge key rejected")
+
+    # 6. registry checkpoint round-trip + tamper
+    ck<String> = sign_store_checkpoint(sc, seed1)
+    fails = fails + check(verify_store_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), forgePub, ck), "store checkpoint verifies")
+    fails = fails + check(!verify_store_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len() + 1, forgePub, ck), "checkpoint with wrong seq rejected")
+
+    # 7. key rotation: AUTHORIZED (k1 -> k2 with old_seed=k1) stays authentic
+    rot_facts<Vec<Record>> = Vec()
+    rot_facts.push(Record { label = "event", value = "key-rotation" })
+    rot<SignedChain> = signed_append(sc, rot_facts, seed2, seed1)
+    fails = fails + check(is_legit_store(rot, root, forgePub), "authorized in-ledger key rotation still authentic")
+    # UNAUTHORIZED rotation (old_seed = k3, not the actual previous key) rejected
+    bad<SignedChain> = signed_append(sc, rot_facts, seed2, seed3)
+    fails = fails + check(!is_legit_store(bad, root, forgePub), "unauthorized key rotation rejected")
+
+    sum<String> = "STORE-INDEX-SIGNED: PASS (authentic store state root, rotation, checkpoint)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

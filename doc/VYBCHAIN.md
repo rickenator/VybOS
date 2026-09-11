@@ -11,9 +11,11 @@
 > verified). VybOS `modules/bootlegit` now offers AUTHENTIC boot legitimization:
 > `seal_boot_signed` / `is_legit_signed` (registry-root anchored, signature-gate
 > tamper rejection) + `sign/verify_boot_checkpoint`, proven by
-> `build/build-bootlegit-signed.vyb` (all 8 checks pass). Next: wire the same
-> into VybForge `forge_legit` (provenance records) and the store's index
-> signing.
+> `build/build-bootlegit-signed.vyb` (all 8 checks pass). It is also wired into
+> **VybForge `forge_legit`** (AUTHENTIC package provenance: `forge_legit_signed.vyb`,
+> 8 prove it) and **VybOS's content-addressed store index** (`modules/storeindex.vyb`:
+> a deterministic signed state root over the store's objects, 10 checks prove
+> it). All three slices dogfood the same stdlib/chain SignedChain.
 
 ## 1. What it is
 

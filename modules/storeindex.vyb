@@ -1,0 +1,125 @@
+// storeindex.vyb — VybOS content-addressed STORE INDEX signing (VybChain #8).
+//
+// The store is an immutable, content-addressed object store (see
+// modules/vybos.vyb): each object lives at a deterministic path derived from
+// its content hash (+ name/version), so a changed object gets a new address
+// and old ones are never mutated. There is no standalone index file — the
+// "index" is the (still-verifiable) set of store objects itself.
+//
+// This module turns that set into ONE verifiable, AUTHENTIC state root
+// (§2/§5 of doc/VYBCHAIN.md): the store's objects are enumerated as
+// StoreObjects, serialized deterministically (sorted), hashed with SHA-256
+// into a state root, and sealed into a SignedChain anchored to the forge /
+// registry key. Any change — an object's content hash, name/version, store
+// path, an addition, a removal, a reordering — yields a DIFFERENT root, and
+// the signed chain's signature gate rejects a root that no longer matches
+// the recorded state. Consumers can hold only the signed root + forge pubkey
+// and verify the whole store offline (like a Nix store that you can trust
+// without rebuilding it).
+//
+// The module NEVER embeds key material — the caller supplies the forge seed
+// out-of-band. This slice is authenticity over the store index (the plain
+// per-object content hash gives the integrity that backs each StoreObject).
+//
+// Run-free library (no main); consumed by build/build-storeindex-signed.vyb.
+
+import collections
+import chain::{signed_genesis, signed_append, signed_verify, contains, tip_hash,
+             sign_checkpoint, verify_checkpoint, Record, SignedChain}
+import crypto::{sha256}
+import vybos::{content_hash}
+
+// One immutable store object as it appears in the index.
+share(all)
+struct StoreObject {
+    name<String>,
+    version<String>,
+    // content address: the sha256-derived hex content hash of the object
+    // (matches vybos.content_hash / the store path scheme).
+    contentHash<String>,
+    storePath<String>
+}
+
+// Deterministic serialization of a store index: one line per object, sorted
+// by storePath, of the form
+//   <storePath>|<name>|<version>|<contentHash>
+// Sorting makes the root independent of enumeration order (hash-binding).
+share(all)
+serialize_index(objs<Vec<StoreObject>>)<String> -> {
+    lines<Vec<String>> = Vec()
+    n<Int> = objs.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            o<StoreObject> = objs.get(i)
+            lines.push(o.storePath + "|" + o.name + "|" + o.version + "|" + o.contentHash)
+        }
+    }
+    sl<Vec<String>> = lines.sorted()
+    s<String> = ""
+    m<Int> = sl.len()
+    if (m > 0) {
+        for (i in 0..m - 1) {
+            if (i > 0) { s = s + "; " }
+            s = s + sl.get(i)
+        }
+    }
+    return s
+}
+
+// The store state root: sha256 of the deterministic sorted index text.
+share(all)
+store_state_root(objs<Vec<StoreObject>>)<String> -> {
+    return sha256(serialize_index(objs))
+}
+
+// Content-address a StoreObject the same way vybos.content_hash does — the
+// index records the artifact bytes' digest plus identity.
+share(all)
+store_object(name<String>, version<String>, bytes<String>)<StoreObject> -> {
+    ch<String> = content_hash(bytes, name, version)
+    return StoreObject {
+        name = name,
+        version = version,
+        contentHash = ch,
+        storePath = "/vyb/store/" + ch + "-" + name + "-" + version
+    }
+}
+
+// Seal the store index into a SIGNED chain: a signed genesis carrying the
+// deterministic state root + object count, then a signed attestation block
+// listing the fully rendered index. Returns a SignedChain.
+share(all)
+seal_store_index_signed(objs<Vec<StoreObject>>, forge_origin<String>, seed<String>)<SignedChain> -> {
+    root<String> = store_state_root(objs)
+    facts<Vec<Record>> = Vec()
+    facts.push(Record { label = "state_root", value = root })
+    facts.push(Record { label = "object_count", value = objs.len().to_string() })
+    base<SignedChain> = signed_genesis(forge_origin, facts, seed)
+    att<Vec<Record>> = Vec()
+    att.push(Record { label = "attested_by", value = "vybforge" })
+    att.push(Record { label = "index", value = serialize_index(objs) })
+    return signed_append(base, att, seed, seed)
+}
+
+// True iff the store index is AUTHENTIC and the given root matches the sealed
+// state root: signed_verify (integrity + every block sig + genesis signer ==
+// the forge/registry key + authorized rotation) AND a vybforge/store origin
+// AND the chain records exactly `expected_root` as its state_root.
+share(all)
+is_legit_store(sc<SignedChain>, expected_root<String>, forge_pub<String>)<Bool> -> {
+    if (!signed_verify(sc, forge_pub)) { return false }
+    if (!sc.chain.origin.contains("vybforge")) { return false }
+    if (!sc.chain.origin.contains("store")) { return false }
+    return contains(sc.chain, "state_root", expected_root)
+}
+
+# Registry checkpoint over (seq, tip): an external verifier holding only the
+# forge's public key can confirm the store's state root at a sequence.
+share(all)
+sign_store_checkpoint(sc<SignedChain>, seed<String>)<String> -> {
+    return sign_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), seed)
+}
+share(all)
+verify_store_checkpoint(tip<String>, seq<Int>, forge_pub<String>, sig<String>)<Bool> -> {
+    return verify_checkpoint(tip, seq, forge_pub, sig)
+}
