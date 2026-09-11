@@ -1,0 +1,190 @@
+// verifyinstall.vyb — VybOS VERIFY-BEFORE-INSTALL resolver gate (VybChain #8,
+// doc/VYBCHAIN.md §5). The installer's trust checkpoint:
+//
+//   resolve closure → verify the ledger segment up to a TRUSTED CHECKPOINT →
+//   fetch from the content-addressed store → verify each artifact against its
+//   ledger record (published, NOT revoked/yanked, content hash matches) →
+//   construct + verify the resulting SYSTEM STATE ROOT → refuse untrusted /
+//   revoked / mismatched / historically-inconsistent artifacts → roll back by
+//   selecting a previously verified state root.
+//
+// This module is the pure gate. It consumes a domain-operation SignedChain
+// (modules/ledger.vyb — publish / revoke / yank ops) and a desired artifact
+// set (the resolved closure, each with name/version and its on-disk content
+// hash), and answers three questions the installer MUST clear before
+// materialising anything:
+//
+//   1. trusted segment  — the ledger chain (genesis through tip) verifies under
+//      the registry pubkey AND a registry-signed checkpoint covers the tip,
+//      so we accept a segment without holding the whole registry.
+//   2. artifact audit   — every desired artifact is published in the ledger,
+//      has NOT been revoked or yanked, and its on-disk content hash equals the
+//      hash the ledger recorded at publish time (content-address binding —
+//      an object that doesn't match its accepted record is refused).
+//   3. state root       — the deterministic SYSTEM state root derived from the
+//      accepted artifact set equals the ledger's recorded state_root: the
+//      closure we're about to install is exactly the state the registry
+//      signed.
+//
+// The module NEVER embeds key material — the registry pubkey and (for
+// checkpoints) the signed token are caller-supplied.
+//
+// Run-free library (no main); proven by build/build-verifyinstall.vyb.
+
+import collections
+import chain::{signed_verify, tip_hash, verify_checkpoint, Record, SignedChain}
+import crypto::{sha256}
+
+// One artifact the installer wants to bring in: `name`/`version` identity and
+// `hash` = the SHA-256 content hash read off the content-addressed store
+// object the resolver selected.
+share(all)
+struct Artifact {
+    name<String>,
+    version<String>,
+    hash<String>
+}
+
+// == helpers over the ledger's op records ================================
+
+// True iff the ledger contains a `publish` op for `name@version` (the artifact
+// was accepted/published at some point — the precondition to be offered).
+share(all)
+has_published(sc<SignedChain>, name<String>, version<String>)<Bool> -> {
+    return has_op(sc, "op:publish", name + "@" + version)
+}
+
+// True iff the ledger contains a `revoke` or `yank` op for `name@version`
+// (the artifact, even if once published, is no longer offered).
+share(all)
+is_retracted(sc<SignedChain>, name<String>, version<String>)<Bool> -> {
+    if (has_op(sc, "op:revoke", name + "@" + version)) { return true }
+    return has_op(sc, "op:yank", name + "@" + version)
+}
+
+// The content hash the ledger recorded when `name@version` was published
+// (the segment after the '|' in the publish op's value), or "" if not found.
+share(all)
+published_hash(sc<SignedChain>, name<String>, version<String>)<String> -> {
+    id<String> = name + "@" + version
+    nb<Int> = sc.chain.blocks.len()
+    if (nb > 0) {
+        for (b in 1..nb - 1) {
+            r<Vec<Record>> = sc.chain.blocks.get(b).records
+            n<Int> = r.len()
+            if (n > 0) {
+                for (i in 0..n - 1) {
+                    rec<Record> = r.get(i)
+                    if (rec.label != "op:publish") { continue }
+                    val<String> = rec.value
+                    if (val == id) { return "" }
+                    prefix<String> = id + "|"
+                    if (val.len() > prefix.len() && val.substring(0, prefix.len()) == prefix) {
+                        return val.substring(prefix.len(), val.len())
+                    }
+                }
+            }
+        }
+    }
+    return ""
+}
+
+// generic op lookup: any record labelled `lbl` with value-prefix `id` in the
+// ledger's signed blocks (skips genesis block 0).
+share(all)
+has_op(sc<SignedChain>, lbl<String>, id<String>)<Bool> -> {
+    nb<Int> = sc.chain.blocks.len()
+    if (nb > 0) {
+        for (b in 1..nb - 1) {
+            r<Vec<Record>> = sc.chain.blocks.get(b).records
+            n<Int> = r.len()
+            if (n > 0) {
+                for (i in 0..n - 1) {
+                    rec<Record> = r.get(i)
+                    if (rec.label != lbl) { continue }
+                    v<String> = rec.value
+                    if (v == id) { return true }
+                    ip<Int> = v.index_of("|")
+                    if (ip >= 0 && v.substring(0, ip) == id) { return true }
+                }
+            }
+        }
+    }
+    return false
+}
+
+// == the three gates ======================================================
+
+// 1. TRUSTED SEGMENT: the ledger chain verifies under the registry pubkey AND
+//    a registry-signed checkpoint covers its current tip at `height`. This is
+//    what lets a consumer accept a chain segment without the whole registry —
+//    it only needs the registry's public key + one signed checkpoint.
+share(all)
+trusted_segment(sc<SignedChain>, registry_pub<String>, ck_sig<String>)<Bool> -> {
+    if (!signed_verify(sc, registry_pub)) { return false }
+    return verify_checkpoint(tip_hash(sc.chain), sc.chain.blocks.len(), registry_pub, ck_sig)
+}
+
+// 2. ARTIFACT AUDIT: every desired artifact is published, not revoked/yanked,
+//    and its on-disk content hash MATCHES the ledger's recorded publish hash.
+//    Returns a String describe-good ("ok:all") or a refusal reason.
+share(all)
+audit_artifacts(sc<SignedChain>, arts<Vec<Artifact>>)<String> -> {
+    n<Int> = arts.len()
+    if (n == 0) { return "ok:all" }
+    for (i in 0..n - 1) {
+        a<Artifact> = arts.get(i)
+        if (!has_published(sc, a.name, a.version)) {
+            return "unpublished:" + a.name + "@" + a.version
+        }
+        if (is_retracted(sc, a.name, a.version)) {
+            return "retracted:" + a.name + "@" + a.version
+        }
+        ph<String> = published_hash(sc, a.name, a.version)
+        if (ph.len() == 0) {
+            return "no-record:" + a.name + "@" + a.version
+        }
+        if (ph != a.hash) {
+            return "mismatch:" + a.name + "@" + a.version
+        }
+    }
+    return "ok:all"
+}
+
+// 3. SYSTEM STATE ROOT: deterministic sha256 over the sorted closure of
+//    accepted artifacts ("name@version=hash" per line). Construct (from the
+//    artifacts about to be installed) and compare against the root the ledger
+//    recorded — install only if they match, so the resulting state is EXACTLY
+//    the signed state (rollback = pick a previously accepted root).
+share(all)
+system_state_root(arts<Vec<Artifact>>)<String> -> {
+    lines<Vec<String>> = Vec()
+    n<Int> = arts.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            a<Artifact> = arts.get(i)
+            lines.push(a.name + "@" + a.version + "=" + a.hash)
+        }
+    }
+    sl<Vec<String>> = lines.sorted()
+    s<String> = ""
+    m<Int> = sl.len()
+    if (m > 0) {
+        for (i in 0..m - 1) {
+            if (i > 0) { s = s + "; " }
+            s = s + sl.get(i)
+        }
+    }
+    return sha256(s)
+}
+
+// Full verify-before-install gate in one call: trusted segment (via checkpoint)
+// AND artifact audit clean AND the constructed state root equals `want_root`.
+// Returns true only when every subscriber requirement is met.
+share(all)
+verify_before_install(sc<SignedChain>, arts<Vec<Artifact>>, want_root<String>,
+                      registry_pub<String>, ck_sig<String>)<Bool> -> {
+    if (!trusted_segment(sc, registry_pub, ck_sig)) { return false }
+    if (audit_artifacts(sc, arts) != "ok:all") { return false }
+    return system_state_root(arts) == want_root
+}

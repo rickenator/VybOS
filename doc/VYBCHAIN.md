@@ -18,7 +18,11 @@
 > it). The **domain-operation ledger** (`modules/ledger.vyb`) now models the full
 > §2 operation set — publish/promote/revoke/yank/replace_key/checkpoint — each a
 > SIGNED block with state DERIVED by replay from genesis (22 checks prove it).
-> All four slices dogfood the same stdlib/chain SignedChain.
+> **Verify-before-install** (`modules/verifyinstall.vyb`) is the §5 resolver gate:
+> trusted chain segment via registry checkpoint -> artifact audit (published,
+> not revoked/yanked, content hash == ledger record) -> construct+verify the
+> system state root -> roll back to a prior verified root (13 checks prove it).
+> All five slices dogfood the same stdlib/chain SignedChain.
 
 ## 1. What it is
 

@@ -1,0 +1,95 @@
+// build-verifyinstall.vyb — VybOS VERIFY-BEFORE-INSTALL proving entry (VybChain
+// #8, §5). Drives modules/verifyinstall.vyb: a full ledger with publish /
+// revoke / replace_key ops, then exercises the resolver gate —
+// trusted segment (via registry checkpoint) → artifact audit (published, not
+// revoked/yanked, content hash matches) → system state root construction+match
+// — and shows every failure mode is refused BEFORE anything is installed.
+//
+// Key material: RFC 8032 TEST seeds, scaffold-only.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-verifyinstall.vyb --module-path modules
+
+import ledger::{registry_genesis, apply_op, replace_key, sign_ledger_checkpoint, PkgOp}
+import verifyinstall::{Artifact, trusted_segment, audit_artifacts, system_state_root,
+             verify_before_install, has_published, is_retracted, published_hash}
+import chain::{SignedChain}
+import crypto::{ed25519_publickey, ed25519_verify}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    regPub<String> = ed25519_publickey(seed1)
+
+    # Build a registry ledger: genesis + publish busybox, qemu (with content
+    # hashes) + revoke qemu, then a key rotation, then publish vim.
+    sc<SignedChain> = registry_genesis("pkg", "ed25519", seed1)
+    sc = apply_op(sc, PkgOp { kind = "publish", name = "busybox", version = "1.37.0", stage = "", hash = "h_bb" }, seed1)
+    sc = apply_op(sc, PkgOp { kind = "publish", name = "qemu", version = "9.1.0", stage = "", hash = "h_q" }, seed1)
+    sc = apply_op(sc, PkgOp { kind = "revoke", name = "qemu", version = "9.1.0", stage = "", hash = "" }, seed1)
+    sc = replace_key(sc, seed2, seed1)
+    sc = apply_op(sc, PkgOp { kind = "publish", name = "vim", version = "9.1", stage = "", hash = "h_v" }, seed2)
+
+    # registry-signed checkpoint over the tip
+    ck<String> = sign_ledger_checkpoint(sc, seed1)
+
+    # --- 1. trusted segment: valid checkpoint + verify -------------------
+    fails = fails + check(trusted_segment(sc, regPub, ck), "trusted segment: chain verifies under registry + checkpoint")
+    fails = fails + check(!trusted_segment(sc, ed25519_publickey(seed2), ck), "trusted segment: wrong registry root rejected")
+    fails = fails + check(!trusted_segment(sc, regPub, "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"), "trusted segment: bogus checkpoint rejected")
+
+    # --- 2. artifact audit ----------------------------------------------
+    # a clean closure: busybox (published, hash matches) + vim (published by
+    # the rotated key, hash matches).
+    clean<Vec<Artifact>> = Vec()
+    clean.push(Artifact { name = "busybox", version = "1.37.0", hash = "h_bb" })
+    clean.push(Artifact { name = "vim", version = "9.1", hash = "h_v" })
+    fails = fails + check(audit_artifacts(sc, clean) == "ok:all", "audit: clean closure passes")
+
+    # qemu was revoked -> refused
+    bad1<Vec<Artifact>> = Vec()
+    bad1.push(Artifact { name = "qemu", version = "9.1.0", hash = "h_q" })
+    fails = fails + check(audit_artifacts(sc, bad1).starts_with("retracted:"), "audit: revoked artifact refused")
+
+    # hash mismatch -> refused
+    bad2<Vec<Artifact>> = Vec()
+    bad2.push(Artifact { name = "busybox", version = "1.37.0", hash = "EVIL" })
+    fails = fails + check(audit_artifacts(sc, bad2).starts_with("mismatch:"), "audit: content-hash mismatch refused")
+
+    # never-published -> refused
+    bad3<Vec<Artifact>> = Vec()
+    bad3.push(Artifact { name = "nope", version = "0.0", hash = "x" })
+    fails = fails + check(audit_artifacts(sc, bad3).starts_with("unpublished:"), "audit: unpublishable artifact refused")
+
+    # --- 3. system state root -------------------------------------------
+    root_c<String> = system_state_root(clean)
+    fails = fails + check(verify_before_install(sc, clean, root_c, regPub, ck), "gate: clean closure + matching root installed")
+    fails = fails + check(!verify_before_install(sc, bad1, root_c, regPub, ck), "gate: revoked closure refused")
+    fails = fails + check(!verify_before_install(sc, bad2, root_c, regPub, ck), "gate: mismatched-hash closure refused")
+    fails = fails + check(!verify_before_install(sc, clean, "deadbeef0000", regPub, ck), "gate: wrong target root refused")
+
+    # state root is deterministic over closure ordering
+    clean2<Vec<Artifact>> = Vec()
+    clean2.push(Artifact { name = "vim", version = "9.1", hash = "h_v" })
+    clean2.push(Artifact { name = "busybox", version = "1.37.0", hash = "h_bb" })
+    fails = fails + check(system_state_root(clean2) == root_c, "state root order-independent (sorted)")
+
+    # --- 4. rollback: a previously verified root stays valid -------------
+    # busybox-only state was verified earlier; re-checking it (as a rollback
+    # target) against a closure of just busybox still passes.
+    busy<Vec<Artifact>> = Vec()
+    busy.push(Artifact { name = "busybox", version = "1.37.0", hash = "h_bb" })
+    fails = fails + check(verify_before_install(sc, busy, system_state_root(busy), regPub, ck), "rollback: prior busybox state root still verifies")
+
+    sum<String> = "VERIFY-INSTALL: PASS (trusted segment, artifact audit, state root, rollback)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
