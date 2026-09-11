@@ -1,0 +1,87 @@
+// build-repair-loop.vyb — VybOS ADAPTIVE REPAIR LOOP proving entry (issue #7).
+// Drives the #7 repair core (modules/repair.vyb): a build failure on a pristine
+// source escalates, a patch proposal is applied, validated, auto-accepted (or
+// sent to human for high-risk), and the accepted patch feeds the package
+// realization record — proving the "AI may author, VybForge owns/validates/
+// records" principle:
+//
+//   1. apply a generated minimal diff -> patched source, re-hashed, tests +
+//      integration PASS -> accept (low-risk);
+//   2. a high-risk generated repair -> guardrail sends to human, NOT auto-accept;
+//   3. a patch that doesn't apply / no-op -> not accepted;
+//   4. patched-source identity is deterministic + content-addressed;
+//   5. the accepted generated patch is legally sealable and seals into the
+//      realization record with its lifecycle state (rebuild reproduces exactly).
+
+import repair::{PatchProposal, Repair, apply_diff, repair_step, should_accept,
+             split_lines}
+import patchlife::{ManagedPatch, promote}
+import packagerealization::{RealPatch, to_real_patch, is_legally_sealable,
+             realization_identity, seal_realization, is_legit_realization}
+import chain::{SignedChain}
+import crypto::{ed25519_publickey, sha256}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    forgePub<String> = ed25519_publickey(seed1)
+    origin<String> = "vybforge/pkg-realizations"
+
+    # pristine source: a tiny deterministic tree
+    pristine<String> = "int add(int a, int b) {\n    return a - b;\n}"
+
+    # --- 1. a generated minimal repair: fix sign bug, tests + integration pass
+    gen<PatchProposal> = PatchProposal {
+        cls = "generated", diff = "-    return a - b;\n+    return a + b;\n",
+        reason = "fix add() sign bug", generator = "qwen-moe-1", matched = true }
+    r<Repair> = repair_step(pristine, gen, true, true)
+    fails = fails + check(r.accepted, "generated repair (tests+integration pass) accepted")
+    fails = fails + check(r.patched_source == "int add(int a, int b) {\n    return a + b;\n}",
+                          "diff applied correctly (return a + b)")
+    fails = fails + check(r.source_hash == sha256("source:int add(int a, int b) {\n    return a + b;\n}"),
+                          "patched-source hash is deterministic + content-addressed")
+
+    # --- 2. high-risk surface -> guardrail sends to human, not auto-accept
+    fails = fails + check(should_accept(r, true) == false, "high-risk generated repair -> human, not auto-accept")
+    fails = fails + check(should_accept(r, false), "low-risk generated repair auto-accepts")
+
+    # --- 3. a patch that doesn't apply (no-op / unmatched) is not accepted
+    gen_noop<PatchProposal> = PatchProposal {
+        cls = "generated", diff = "-    return DEFINES_NOT_THERE;\n+    return b;\n",
+        reason = "no such line", generator = "qwen-moe-1", matched = true }
+    r_n<Repair> = repair_step(pristine, gen_noop, true, true)
+    fails = fails + check(!r_n.accepted, "non-applying patch not accepted (no-op)")
+
+    # --- 4. validation gate: tests FAIL -> not accepted even though patch applies
+    r_bad<Repair> = repair_step(pristine, gen, false, true)
+    fails = fails + check(!r_bad.accepted, "patch whose tests fail is not accepted")
+
+    # --- 5. accepted generated patch is legally sealable + seals into the
+    #         realization record (state-tagged, exact reproduction)
+    managed<ManagedPatch> = ManagedPatch { id = "gp1", cls = "generated", state = "experimental",
+        highRisk = false, reason = gen.reason, generator = gen.generator }
+    reviewed<ManagedPatch> = promote(promote(managed, "validated-candidate"), "reviewed")
+    rp<RealPatch> = to_real_patch(reviewed, r.source_hash)
+    fails = fails + check(is_legally_sealable(rp), "accepted generated patch legally sealable")
+    pset<Vec<RealPatch>> = Vec(); pset.push(rp)
+    rident<String> = realization_identity(pset)
+    rc<SignedChain> = seal_realization("system", "0.1", "http://mirror", rident, pset, origin, seed1)
+    fails = fails + check(is_legit_realization(rc, rident, forgePub),
+                          "accepted repair sealed into authentic realization record")
+
+    # --- 6. the patch-set identity is order-independent (reproducible)
+    pset2<Vec<RealPatch>> = Vec(); pset2.push(rp)
+    fails = fails + check(realization_identity(pset2) == rident, "realization identity deterministic")
+
+    sum<String> = "REPAIR-LOOP: PASS (apply -> validate -> guardrail -> promote -> seal; reproduces)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

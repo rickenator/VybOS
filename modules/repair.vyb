@@ -1,0 +1,154 @@
+// repair.vyb — VybOS ADAPTIVE REPAIR LOOP core (issue #7).
+//
+// The pure orchestration that drives a build failure to an ACCEPTED, sealed
+// realization — the part that uses the patchlife lifecycle + package
+// realization record. The #7 pipeline:
+//
+//   build failure -> collect constrained repair context -> escalate
+//     (curated > upstream > generate > human) -> model proposes a minimal
+//     unified diff -> apply to pristine source -> rebuild/test -> validate ->
+//     promote through the lifecycle -> seal into the realization record.
+//
+// MODEL BOUNDARY: a real in-OS model lives in VybForge (native Qwen inference);
+// pure Vyb JIT cannot call it. So `propose_patch` is a CALLER-SUPPLIED function
+// (in a real deployment it invokes the model); this module takes its result as
+// a plain value and owns everything downstream: deciding to generate, applying
+// the patch to pristine source, validating, promoting, and sealing — so an
+// authored patch is never an invisible source mutation and once accepted it is
+// recorded by id/hash/state for exact reproduction.
+//
+// Run-free library (no main); proven by build/build-repair-loop.vyb.
+
+import collections
+import crypto::{sha256}
+
+// A proposed patch (the model boundary — what the caller's model returns).
+share(all)
+struct PatchProposal {
+    cls<String>,          // "curated" | "upstream" | "generated"
+    diff<String>,         // the unified-diff (for generated: minimal)
+    reason<String>,       // the repair objective (generated: why the change)
+    generator<String>,    // model/generator identity (generated; else "")
+    matched<Bool>         // whether the diff applies cleanly to this source
+}
+
+// One step of the repair loop: the patched source + the validation verdict.
+share(all)
+struct Repair {
+    patched_source<String>,  // pristine source after applying the proposal
+    source_hash<String>,     // content hash of the patched source
+    tests_pass<Bool>,        // package tests passed
+    integration_pass<Bool>,  // VybOS integration validation passed
+    accepted<Bool>           // both validation gates cleared
+}
+
+// --- patch application ----------------------------------------------------
+
+// Apply a proposal to a pristine source text. A "unified diff" here is a
+// simple, deterministic hunks: lines of the form `-<old>` optionally followed
+// by `+<new>` REPLACE the matching old line in place with the new line (the
+// minimal shape #7 asks models to emit). Unmatched removal -> the patch does
+// not apply. Order of hunks is preserved. Returns the patched source.
+share(all)
+apply_diff(pristine<String>, diff<String>)<String> -> {
+    slines<Vec<String>> = split_lines(pristine)
+    dlines<Vec<String>> = split_lines(diff)
+    out<Vec<String>> = Vec()
+    n<Int> = slines.len()
+    if (n > 0) {
+        for (i in 0..n - 1) {
+            line<String> = slines.get(i)
+            nd<Int> = dlines.len()
+            hit<Int> = 0
+            if (nd > 0) {
+                for (j in 0..nd - 1) {
+                    tagd<String> = ""
+                    if (dlines.get(j).len() >= 2) { tagd = dlines.get(j).substring(0, 1) }
+                    if (tagd == "-") {
+                        oldline<String> = dlines.get(j).substring(1, dlines.get(j).len())
+                        if (oldline == line) {
+                            newline<String> = ""
+                            if (j + 1 < nd && dlines.get(j + 1).len() >= 2 &&
+                                dlines.get(j + 1).substring(0, 1) == "+") {
+                                newline = dlines.get(j + 1).substring(1, dlines.get(j + 1).len())
+                            }
+                            if (newline.len() > 0) { out.push(newline) }
+                            hit = 1
+                            break
+                        }
+                    }
+                }
+            }
+            if (hit == 0) { out.push(line) }
+        }
+    }
+    # append trailing pure +insert hunks not already consumed by a -/+ pair
+    nd2<Int> = dlines.len()
+    if (nd2 > 0) {
+        for (j in 0..nd2 - 1) {
+            if (dlines.get(j).len() >= 2 && dlines.get(j).substring(0, 1) == "+") {
+                if (j == 0 || dlines.get(j - 1).len() < 2 || dlines.get(j - 1).substring(0, 1) != "-") {
+                    out.push(dlines.get(j).substring(1, dlines.get(j).len()))
+                }
+            }
+        }
+    }
+    s<String> = ""
+    m<Int> = out.len()
+    if (m > 0) {
+        for (i in 0..m - 1) {
+            if (i > 0) { s = s + "\n" }
+            s = s + out.get(i)
+        }
+    }
+    return s
+}
+
+// split a block of text into lines ("\n"-separated), empty -> empty Vec.
+share(all)
+split_lines(text<String>)<Vec<String>> -> {
+    out<Vec<String>> = Vec()
+    t<String> = text
+    pos<Int> = t.index_of("\n")
+    while (pos >= 0 && t.len() > 0) {
+        out.push(t.substring(0, pos))
+        t = t.substring(pos + 1, t.len())
+        pos = t.index_of("\n")
+    }
+    if (t.len() > 0) { out.push(t) }
+    return out
+}
+
+// --- the repair loop -------------------------------------------------------
+
+// Drive one repair step given pristine source + a patch proposal:
+//   1. apply the diff -> patched source;
+//   2. re-hash the result (content-addressed identity of the repaired source);
+//   3. run the (provided) build/test + integration validation gates;
+//   4. accept only when both gates pass.
+// The validation predicate (`tests_ok`, `integration_ok`) is caller-supplied —
+// in a real loop it reruns the build and package/OS tests on the patched tree.
+// Returns the Repair record; `accepted` is false unless patched && both gates.
+share(all)
+repair_step(pristine<String>, proposal<PatchProposal>,
+            tests_ok<Bool>, integration_ok<Bool>)<Repair> -> {
+    applied<String> = apply_diff(pristine, proposal.diff)
+    ch<String> = sha256("source:" + applied)
+    # a no-op apply (patch didn't change anything / didn't match) isn't a repair
+    noop<Bool> = applied == pristine
+    acc<Bool> = !noop && tests_ok && integration_ok
+    return Repair { patched_source = applied, source_hash = ch,
+                    tests_pass = tests_ok, integration_pass = integration_ok,
+                    accepted = acc }
+}
+
+// Decode whether to ACCEPT a generated repair: accept only if it is a real
+// change (patched source differs), both validation gates passed, and the patch
+// is destined for a NON-high-risk surface (caller passes the risk verdict; a
+// high-risk generated repair falls to human review, never auto-accept).
+share(all)
+should_accept(r<Repair>, high_risk<Bool>)<Bool> -> {
+    if (!r.accepted) { return false }
+    if (high_risk) { return false }   // guardrail: high-risk -> human, not auto
+    return true
+}

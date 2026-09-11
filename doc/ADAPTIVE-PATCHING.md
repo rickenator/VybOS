@@ -98,6 +98,15 @@ fingerprinted, sealed patches — never by re-running the model.
   patch + curated patch seal into an authentic realization, unreviewed /
   high-risk patches are refused, signature-gate tamper rejects, and identity is
   order-independent.
+- `modules/repair.vyb` + `build/build-repair-loop.vyb` — the ADAPTIVE REPAIR
+  LOOP core (10 checks): apply a generated minimal `-old/+new` diff in place,
+  re-hash the patched source, run build/test + integration validation gates,
+  auto-accept only a low-risk repair (high-risk -> human), refuse non-applying /
+  no-op / test-failing patches — and seal the accepted patch into the authentic
+  realization record (exact reproduction). MODEL BOUNDARY: the proposal is a
+  caller-supplied `PatchProposal` (the in-OS model lives in VybForge; pure Vyb
+  JIT can't invoke it) — this module owns apply/validate/promote/seal
+  downstream of the model.
 
 ## Open follow-ons (split from #7 once the realization model stabilizes)
 
