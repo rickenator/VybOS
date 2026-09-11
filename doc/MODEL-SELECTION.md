@@ -1,13 +1,14 @@
 # VybOS model-selection layer (VYBLLM-ARCHITECTURE.md §4/§5 step 4-5) — mapped plan
 
-> Status: CHECKPOINT A DONE, verified (2026-09-11). `modules/modelselect.vyb` +
-> `build/build-modelselect.vyb` run 10/10 assertions PASS under `build/vyb`
-> (fixture signed registry: admin/builder/user models + tamper/revoke/wrong-key/
-> root-gate rejects). Checkpoint B (config + boot wiring) is the forward slice.
-> No real 4B artifact needed: the slice is SELECTION + VERIFICATION over signed
-> registry entries, dogfooded with fixture records + a fixture tokenizer dir. The
-> real Qwen3-4B swap is VybForge's in-progress track; it plugs in as another
-> signed registry entry.
+> Status: CHECKPOINT A + B DONE, verified (2026-09-11). A: `modules/modelselect.vyb`
+> + `build/build-modelselect.vyb` — selection + verification core. B: `## models`
+> section in the vybconfig model (`ModelReq {role,id}`, parse/serialize/validate/
+> diff) + config-driven boot/reload wiring `boot_model(...)` (admin root-gated,
+> builder unprivileged). Both run green under `build/vyb` (modelselect 15/15;
+> vybconfig incl. models invariants). No real 4B artifact needed: the slice is
+> SELECTION + VERIFICATION over signed registry entries, dogfooded with fixture
+> records + a fixture tokenizer dir. The real Qwen3-4B swap is VybForge's
+> in-progress track; it plugs in as another signed registry entry.
 >
 > Steering: VybOS issue #9. Engine facade already landed (stdlib/vllm Model).
 
@@ -38,6 +39,25 @@ the freedom/trust-accept capability gate); a user role passes the default
 (non-root) credential. Kinds: "admin" (boot default + root-gated reload) vs
 "user" (unprivileged any-model).
 
+### Pinned mechanics (Checkpoint B, 2026-09-11)
+- **The gate is a credential token, not an in-repo role enum:** `boot_model` /
+  `select_model` take `cred` (caller's credential) + `root_token` (the root
+  surface's). `role == "admin"` ⇒ selection/reload only when `cred ==
+  root_token`; `is_admin(role)` marks the role root-gated so callers can render
+  the privilege boundary. User any-model + builder default pass `cred=""`.
+- **Maps onto the capability model as install-time trust-accept:** loading a
+  SIGNED model artifact is exactly like smuggling a privileged package
+  (trust-accept under a `freedom`/capability boundary, per `bindings/cuda` and
+  the #204 gate stack). The root token is HELD ONLY by the root-owned boot/system-
+  agent surface; it is never stored in the config, registry, or model records —
+  it re-enters via the credentialing path at boot/reload time (same convention as
+  seeds: caller-supplied, scaffold/test fixtures only, never the runtime).
+- **Boot ordering:** VybOS boots → `boot_model(cfg, "admin", …)` loads `models.admin`
+  by default (root cred). If a user later loads another model (a signed registry
+  entry), returning to admin is the same call with a fresh root `cred` — refused
+  without it. `models.builder` is VybForge's default (unprivileged within VybOS when
+  Forge is included post-bootstrap).
+
 ## Checkpoints (each keeps VybOS green under build/vyb)
 - **A. Selection + verification core.** `modules/modelselect.vyb`:
   role->model assignment matching, registry replay + record lookup,
@@ -46,6 +66,9 @@ the freedom/trust-accept capability gate); a user role passes the default
   registry (synthetic seeds/records: admin, builder, a generic user model +
   a tampered record that MUST verify-false) — asserts every selection and both
   an accept and a reject.
-- **B. Boot + config wiring.** `models.admin`/`models.builder` in the vybconfig
-  model; boot loads admin by default; user any-model path; pin exact root
-  mechanics against the capability model.
+- **B. Boot + config wiring.** **DONE (2026-09-11):** `## models` section in
+  the vybconfig model (`ModelReq {role,id}`; parse/serialize/validate/diff/
+  `find_model`); `boot_model(cfg, role, …)` resolves a role's boot model against
+  the signed registry (admin loads by default, root-gated via `cred`; builder
+  unprivileged; unassigned role rejected). Root mechanics pinned above. All green
+  under build/vyb (modelselect 15/15, vybconfig incl. models invariants).

@@ -1,8 +1,8 @@
 // build-vybconfig.vyb — VybOS vyb-config exerciser (issue #2): typed schema +
 // /etc/vybos.md parser + validate + canonical serialization + a->b diff.
 import collections
-import vybconfig::{ServiceOpt, PkgReq, VybConfig, parse_md, validate, to_md, diff_lines,
-                   substr_has, b01, find_service, find_pkg}
+import vybconfig::{ServiceOpt, PkgReq, ModelReq, VybConfig, parse_md, validate, to_md, diff_lines,
+                   substr_has, b01, find_service, find_pkg, find_model}
 
 check(cond<Bool>, label<String>)<Int> -> {
     if (!cond) { println("  FAIL " + label); return 1 }
@@ -16,10 +16,12 @@ main()<Int> -> {
 
     cfgA<String> = "# vybos\nhostname = hera\n\n## packages\n- gzip 1.3\n- vim 9.1\n" +
         "\n## services\n- sshd enabled authkeys=/root/.ssh/authorized_keys\n" +
-        "- getty enabled on=ttyS0\n- nginx disabled\n"
+        "- getty enabled on=ttyS0\n- nginx disabled\n" +
+        "\n## models\n- admin qwen-admin@1.0.0\n- builder qwen-builder@0.9.0\n"
     cfgB<String> = "# vybos\nhostname = nova\n\n## packages\n- gzip 2.1\n- openssh 9.6\n" +
         "\n## services\n- sshd enabled authkeys=/root/.ssh/authorized_keys\n" +
-        "- getty disabled\n- nginx disabled\n"
+        "- getty disabled\n- nginx disabled\n" +
+        "\n## models\n- admin qwen-admin@2.0.0\n"
 
     // 1. parse A -> typed model
     a<VybConfig> = parse_md(cfgA)
@@ -29,21 +31,31 @@ main()<Int> -> {
     fails = fails + check(a.services.get(0).name == "sshd" && a.services.get(0).enabled, "parse: sshd enabled + opts")
     fails = fails + check(substr_has(a.services.get(0).opts, "authkeys="), "parse: sshd opts captured")
     fails = fails + check(a.services.get(2).name == "nginx" && !a.services.get(2).enabled, "parse: nginx disabled")
+    fails = fails + check(a.models.len() == 2, "parse: 2 model assignments (admin/builder)")
+    fails = fails + check(a.models.get(0).role == "admin" && a.models.get(0).id == "qwen-admin@1.0.0", "parse: models.admin -> qwen-admin@1.0.0")
+    fails = fails + check(a.models.get(1).role == "builder" && a.models.get(1).id == "qwen-builder@0.9.0", "parse: models.builder -> qwen-builder@0.9.0")
 
     // 2. validate
     fails = fails + check(validate(a) == "", "validate(A) OK")
-    bad<VybConfig> = VybConfig { hostname = "", version = "", services = Vec(), pkgs = Vec() }
+    bad<VybConfig> = VybConfig { hostname = "", version = "", services = Vec(), pkgs = Vec(), models = Vec() }
     fails = fails + check(validate(bad) != "", "validate rejects missing hostname")
-    badp<VybConfig> = VybConfig { hostname = "x", version = "", services = Vec(), pkgs = Vec() }
+    badp<VybConfig> = VybConfig { hostname = "x", version = "", services = Vec(), pkgs = Vec(), models = Vec() }
     badp.pkgs.push(PkgReq { name = "", version = "" })
     fails = fails + check(validate(badp) != "", "validate rejects an unnamed package")
+    badm<VybConfig> = VybConfig { hostname = "x", version = "", services = Vec(), pkgs = Vec(), models = Vec() }
+    badm.models.push(ModelReq { role = "user", id = "qwen-admin@1.0.0" })
+    fails = fails + check(validate(badm) != "", "validate rejects a non admin|builder model role")
+    badm2<VybConfig> = VybConfig { hostname = "x", version = "", services = Vec(), pkgs = Vec(), models = Vec() }
+    badm2.models.push(ModelReq { role = "admin", id = "nodashes" })
+    fails = fails + check(validate(badm2) != "", "validate rejects a model id without name@version")
 
     // 3. canonical serialization -> reparse round-trip
     mdA<String> = to_md(a)
     a2<VybConfig> = parse_md(mdA)
     fails = fails + check(a2.hostname == "hera", "round-trip: to_md -> parse preserves hostname")
     fails = fails + check(a2.pkgs.len() == 2 && a2.services.len() == 3, "round-trip: counts preserved")
-    fails = fails + check(substr_has(mdA, "hostname = hera") && substr_has(mdA, "## packages"), "canonical markdown serialized")
+    fails = fails + check(a2.models.len() == 2 && a2.models.get(0).id == "qwen-admin@1.0.0", "round-trip: models preserved")
+    fails = fails + check(substr_has(mdA, "hostname = hera") && substr_has(mdA, "## packages") && substr_has(mdA, "## models"), "canonical markdown serialized (incl. ## models)")
 
     // 4. diff A -> B
     b<VybConfig> = parse_md(cfgB)
@@ -53,6 +65,9 @@ main()<Int> -> {
     fails = fails + check(substr_has(d, "package ~gzip"), "diff: gzip 1.3->2.1 (rebuild)")
     fails = fails + check(substr_has(d, "package -vim"), "diff: vim removed")
     fails = fails + check(substr_has(d, "package +openssh"), "diff: openssh added")
+    fails = fails + check(substr_has(d, "model ~admin"), "diff: models.admin 1.0.0 -> 2.0.0")
+    fails = fails + check(substr_has(d, "model -builder"), "diff: builder model removed")
+    fails = fails + check(find_model(a, "admin").id == "qwen-admin@1.0.0", "find_model: admin assignment lookup")
     fails = fails + check(!substr_has(d, "nginx"), "diff: unchanged nginx absent from diff")
 
     // 5. idempotent diff (no changes)

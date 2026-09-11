@@ -25,8 +25,13 @@ share(all)
 struct ServiceOpt { name<String>, enabled<Bool>, opts<String> }
 share(all)
 struct PkgReq { name<String>, version<String> }
+// A boot model assignment: role ("admin" | "builder") -> model id "name@version"
+// from the SIGNED model registry (see modelselect.vyb). User any-model is a
+// runtime registry load, not a static boot assignment.
 share(all)
-struct VybConfig { hostname<String>, version<String>, services<Vec<ServiceOpt>>, pkgs<Vec<PkgReq>> }
+struct ModelReq { role<String>, id<String> }
+share(all)
+struct VybConfig { hostname<String>, version<String>, services<Vec<ServiceOpt>>, pkgs<Vec<PkgReq>>, models<Vec<ModelReq>> }
 
 share(all)
 substr_has(h<String>, nd<String>)<Bool> -> {
@@ -114,7 +119,7 @@ after_tok(s<String>, off<Int>)<Int> -> {
 // ---- Parsing ----
 share(all)
 parse_md(md<String>)<VybConfig> -> {
-    cfg<VybConfig> = VybConfig { hostname = "", version = "0.1", services = Vec(), pkgs = Vec() }
+    cfg<VybConfig> = VybConfig { hostname = "", version = "0.1", services = Vec(), pkgs = Vec(), models = Vec() }
     section<String> = ""
     l<Int> = md.len()
     start<Int> = 0
@@ -157,6 +162,12 @@ parse_md(md<String>)<VybConfig> -> {
                 ver<String> = ""
                 if (vt >= 0) { ver = tok_at(rest, vt) }
                 cfg.pkgs.push(PkgReq { name = nm, version = ver })
+            } else if (section == "models") {
+                rl<String> = tok_at(rest, 0)
+                idat<Int> = after_tok(rest, 0)
+                mid<String> = ""
+                if (idat >= 0) { mid = tok_at(rest, idat) }
+                cfg.models.push(ModelReq { role = rl, id = mid })
             }
         }
         if (nl < 0) { break }
@@ -183,6 +194,15 @@ validate(cfg<VybConfig>)<String> -> {
             if (p.name.len() == 0 || p.version.len() == 0) { return "validation: a package missing name/version" }
         }
     }
+    k<Int> = cfg.models.len()
+    if (k > 0) {
+        for (i in 0..k-1) {
+            mr<ModelReq> = cfg.models.get(i)
+            if (mr.role.len() == 0) { return "validation: a model missing its role" }
+            if (mr.role != "admin" && mr.role != "builder") { return "validation: model role must be admin|builder (got '" + mr.role + "')" }
+            if (mr.id.len() == 0 || !substr_has(mr.id, "@")) { return "validation: model '" + mr.role + "' missing name@version id" }
+        }
+    }
     return ""
 }
 
@@ -201,6 +221,14 @@ to_md(cfg<VybConfig>)<String> -> {
             if (sv.enabled) { s = s + "enabled" } else { s = s + "disabled" }
             if (sv.opts.len() > 0) { s = s + " " + sv.opts }
             s = s + "\n"
+        }
+    }
+    s = s + "\n## models\n"
+    k<Int> = cfg.models.len()
+    if (k > 0) {
+        for (i in 0..k-1) {
+            mr<ModelReq> = cfg.models.get(i)
+            s = s + "- " + mr.role + " " + mr.id + "\n"
         }
     }
     return s
@@ -229,6 +257,20 @@ find_pkg(c<VybConfig>, name<String>)<PkgReq> -> {
         }
     }
     return PkgReq { name = "", version = "" }
+}
+
+// find a role's boot model assignment in cfg; returns the (possibly empty)
+// ModelReq if none assigned.
+share(all)
+find_model(c<VybConfig>, role<String>)<ModelReq> -> {
+    n<Int> = c.models.len()
+    if (n > 0) {
+        for (i in 0..n-1) {
+            mr<ModelReq> = c.models.get(i)
+            if (mr.role == role) { return mr }
+        }
+    }
+    return ModelReq { role = "", id = "" }
 }
 
 // ---- Diff (a -> b) ----
@@ -270,6 +312,23 @@ diff_lines(a<VybConfig>, b<VybConfig>)<String> -> {
         for (i in 0..pb-1) {
             p<PkgReq> = b.pkgs.get(i)
             if (find_pkg(a, p.name).name == "") { out = out + "package +" + p.name + " " + p.version + "\n" }
+        }
+    }
+    // models
+    ma<Int> = a.models.len()
+    if (ma > 0) {
+        for (i in 0..ma-1) {
+            mr<ModelReq> = a.models.get(i)
+            bm<ModelReq> = find_model(b, mr.role)
+            if (bm.role == "") { out = out + "model -" + mr.role + "\n" }
+            else if (bm.id != mr.id) { out = out + "model ~" + mr.role + " " + mr.id + "->" + bm.id + "\n" }
+        }
+    }
+    mb<Int> = b.models.len()
+    if (mb > 0) {
+        for (i in 0..mb-1) {
+            mr<ModelReq> = b.models.get(i)
+            if (find_model(a, mr.role).role == "") { out = out + "model +" + mr.role + " " + mr.id + "\n" }
         }
     }
     if (out.len() == 0) { out = "(no changes)\n" }

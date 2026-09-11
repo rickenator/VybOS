@@ -21,7 +21,8 @@
 //
 // Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-modelselect.vyb --module-path modules
 
-import modelselect::{ModelSel, select_model}
+import modelselect::{ModelSel, select_model, BootSel, boot_model}
+import vybconfig::{VybConfig, parse_md}
 import packagerecord::{Patch, ModuleRecord, record_root, seal_module_record}
 import ledger::{registry_genesis, apply_op, PkgOp, state_root, is_legit_ledger}
 import chain::{serialize, deserialize, SignedChain, Chain}
@@ -127,6 +128,23 @@ main()<Int> -> {
     # 8. wrong registry pubkey anchors nothing
     h<ModelSel> = select_model("admin", "qwen-admin@1.0.0", reg, records, roots, otherPub, ledgerRoot, storeRoot, rootToken, rootToken)
     fails = fails + check(!h.ok, "model selection rejected under wrong registry pubkey")
+
+    # ---- Checkpoint B: config-driven boot + on-demand admin reload ----
+    # /etc/vybos.md assigns the boot defaults: models.admin + models.builder.
+    conf<VybConfig> = parse_md("# vybos\nhostname = hera\n## models\n- admin qwen-admin@1.0.0\n- builder qwen-builder@0.9.0\n")
+    # boot loads the ADMIN model by default, with the ROOT credential
+    ba<BootSel> = boot_model(conf, "admin", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, rootToken)
+    fails = fails + check(ba.ok && ba.dir == storeRoot + "/qwen-admin-1.0.0", "boot: admin default selected + verified (dir)")
+    fails = fails + check(ba.cred_required, "boot: admin role is credential-gated")
+    # on-demand admin RELOAD without root -> refused
+    br<BootSel> = boot_model(conf, "admin", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(!br.ok && br.cred_required, "boot: on-demand admin reload refused without root credential")
+    # builder default is unprivileged
+    bb<BootSel> = boot_model(conf, "builder", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(bb.ok && !bb.cred_required && bb.dir == storeRoot + "/qwen-builder-0.9.0", "boot: builder default selected unprivileged + dir")
+    # a role with NO config assignment -> rejected
+    bn<BootSel> = boot_model(conf, "vision", reg, records, roots, regPub, ledgerRoot, storeRoot, rootToken, "")
+    fails = fails + check(!bn.ok && !bn.cred_required, "boot: unassigned role rejected (no model in config)")
 
     sum<String> = "MODEL-SELECT: PASS (signed registry selection + verification, root-gated admin, tamper/revoke/wrong-key rejects)"
     if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }

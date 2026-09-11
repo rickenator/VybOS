@@ -34,6 +34,7 @@
 
 import packagerecord::{is_legit_record}
 import ledger::{replay_state, is_legit_ledger}
+import vybconfig::{VybConfig, ModelReq, find_model}
 import chain::{SignedChain, Record}
 import collections
 
@@ -166,4 +167,47 @@ select_model(role<String>, want<String>, registry<SignedChain>,
     # 4. content-addressed store dir the Model facade loads.
     dir<String> = store_root + "/" + nv.name + "-" + nv.version
     return ModelSel { role = role, name = nv.name, version = nv.version, dir = dir, ok = true, reason = "verified" }
+}
+
+// ---- Boot + on-demand reload wiring (config-driven) ----
+
+// "admin" is VybOS's own trusted agent surface; selecting/reloading it is a
+// ROOT-LEVEL privilege (capability classifier — see doc/MODEL-SELECTION.md).
+share(all)
+is_admin(role<String>)<Bool> -> { return role == "admin" }
+
+// The outcome of resolving one role's boot assignment from the config.
+share(all)
+struct BootSel {
+    role<String>,
+    ok<Bool>,
+    cred_required<Bool>,   // true for the root-gated admin role
+    name<String>,
+    version<String>,
+    dir<String>,           // per-model tokenizer dir for the stdlib Model facade
+    reason<String>
+}
+
+share(all)
+boot_reject(role<String>, reason<String>)<BootSel> -> {
+    return BootSel { role = role, ok = false, cred_required = is_admin(role), name = "", version = "", dir = "", reason = reason }
+}
+
+// Resolve a role's boot model from an /etc/vybos.md VybConfig against the
+// signed model registry and produce its tokenizer dir (or a reject). Boot
+// loads "admin" by default (root-gated via `cred`) and offers "builder"
+// (unprivileged); any other role resolves only if assigned in config.
+// On-demand admin RELOAD = calling this again with a fresh `cred`; it is
+// refused unless `cred` equals `root_token`.
+share(all)
+boot_model(cfg<VybConfig>, role<String>, registry<SignedChain>,
+           records<Vec<SignedChain>>, roots<Vec<String>>,
+           reg_pub<String>, ledger_root<String>, store_root<String>,
+           root_token<String>, cred<String>)<BootSel> -> {
+    mr<ModelReq> = find_model(cfg, role)
+    if (mr.role == "" || mr.id.len() == 0) {
+        return boot_reject(role, "no model assigned to role '" + role + "' in config")
+    }
+    sel<ModelSel> = select_model(role, mr.id, registry, records, roots, reg_pub, ledger_root, store_root, root_token, cred)
+    return BootSel { role = role, ok = sel.ok, cred_required = is_admin(role), name = sel.name, version = sel.version, dir = sel.dir, reason = sel.reason }
 }
