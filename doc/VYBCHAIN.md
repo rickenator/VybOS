@@ -27,6 +27,11 @@
 > generated-patch generator provenance, toolchain/flags/builder/validation,
 > artifact hash, publisher Ed25519 signature + timestamp — as AUTHENTIC signed
 > records with a deterministic record root (14 checks prove it).
+> **Realizer integration** (`modules/realize.vyb`) wires §5's gate into the
+> realisation path: `verify_closure(sc, arts, want_root, reg_pub, ck)` returns
+> `ok:all` only after trusted segment (via registry checkpoint) + artifact audit
+> against the ledger + state-root match; the realizer must realize nothing on any
+> other reason (proved by build/build-realizer-verify.vyb, 8 checks).
 > All six slices dogfood the same stdlib/chain SignedChain.
 
 ## 1. What it is

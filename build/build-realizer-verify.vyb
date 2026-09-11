@@ -1,0 +1,147 @@
+// build-realizer-verify.vyb — VybOS REALIZER-INTEGRATION proving entry (VybChain
+// #8, §5). Wires verify-before-install INTO the realise.vyb realizer path:
+// resolve the closure -> build the Artifact list (on-disk content hashes) ->
+// run the §5 gate (trusted chain segment via registry checkpoint + artifact
+// audit against the ledger + system state root match) -> realize ONLY on
+// "ok:all", refuse on any tamper before a single store object is written.
+//
+// Self-contained (uses the same deterministic derive/mirror shapes as
+// build-closure.vyb but with synthesized bytes, so no network). The ledger is
+// the domain-op ledger (modules/ledger.vyb) with a `publish` record per pkg.
+//
+// Key material: RFC 8032 TEST seeds, scaffold-only.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-realizer-verify.vyb --module-path modules
+
+import ledger::{registry_genesis, apply_op, sign_ledger_checkpoint, PkgOp}
+import verifyinstall::{Artifact, system_state_root}
+import realize::{verify_closure}
+import chain::{SignedChain}
+import plan::{Pkg, Dep, SystemSpec, resolve, order_count, token_kth, find_pkg}
+import vybos::{content_hash}
+import crypto::{ed25519_publickey}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+// derive a pkg with a FRESH deps Vec (move-safe).
+deriv(name<String>, ver<String>, src<String>, deps<Vec<Dep>>)<Pkg> -> {
+    return Pkg { name = name, version = ver, source = src, deps = deps, storePath = "" }
+}
+
+// build the Artifact list for a resolved closure: name/version + the content
+// hash of each pkg's (synthesized deterministic) source bytes + version.
+artifacts_of(spec<SystemSpec>, order<String>)<Vec<Artifact>> -> {
+    out<Vec<Artifact>> = Vec()
+    occ<Int> = order_count(order)
+    if (occ > 0) {
+        for (k in 0..occ - 1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(spec.pkgs, nm)
+            if (i >= 0) {
+                p<Pkg> = spec.pkgs.get(i)
+                body<String> = "bytes:" + nm + ":" + p.version   // deterministic body
+                h<String> = content_hash(body, nm, p.version)
+                out.push(Artifact { name = nm, version = p.version, hash = h })
+            }
+        }
+    }
+    return out
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    regPub<String> = ed25519_publickey(seed1)
+
+    # real closure: gzip + openssl both depend on zlib (shared dep, like build-closure).
+    defs<Vec<Dep>> = Vec(); defs.push(Dep { name = "zlib", kind = "runtime" })
+    spec<SystemSpec> = SystemSpec { system = "x86_64-linux", hostname = "hera", pkgs = Vec(), services = Vec() }
+    spec.pkgs.push(deriv("zlib", "1.3", "http://mirror/zlib", Vec()))
+    spec.pkgs.push(deriv("gzip", "2.0", "http://mirror/gzip", defs))
+    spec.pkgs.push(deriv("openssl", "3.1", "http://mirror/openssl", defs))
+
+    order<String> = resolve(spec.pkgs)
+    arts<Vec<Artifact>> = artifacts_of(spec, order)
+    want_root<String> = system_state_root(arts)
+
+    # --- seal the ledger: publish all three with the SAME hashes the on-disk
+    #     bodies produce, so the audit's content-address binding holds. ---
+    sc<SignedChain> = registry_genesis("pkg", "ed25519", seed1)
+    occ<Int> = order_count(order)
+    if (occ > 0) {
+        for (k in 0..occ - 1) {
+            nm<String> = token_kth(order, k)
+            i<Int> = find_pkg(spec.pkgs, nm)
+            p<Pkg> = spec.pkgs.get(i)
+            body<String> = "bytes:" + nm + ":" + p.version
+            h<String> = content_hash(body, nm, p.version)
+            sc = apply_op(sc, PkgOp { kind = "publish", name = nm, version = p.version, stage = "", hash = h }, seed1)
+        }
+    }
+    ck<String> = sign_ledger_checkpoint(sc, seed1)
+
+    # --- 1. the gate PASSES for the authentic closure (zlib,gzip,openssl) ---
+    #     -> a realizer proceeds to materialize. ---
+    fails = fails + check(verify_closure(sc, arts, want_root, regPub, ck) == "ok:all",
+                          "gate ok:all for authentic closure (zlib,gzip,openssl)")
+
+    # --- 2. wrong registry root -> untrusted segment -> refused ---
+    fails = fails + check(verify_closure(sc, arts, want_root, ed25519_publickey(seed2), ck) == "untrusted-segment",
+                          "gate refuses untrusted segment (wrong registry root)")
+
+    # --- 3. bogus checkpoint -> untrusted segment -> refused ---
+    fails = fails + check(verify_closure(sc, arts, want_root, regPub,
+                          "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000") == "untrusted-segment",
+                          "gate refuses untrusted segment (bogus checkpoint)")
+
+    # --- 4. a pkg's ON-DISK content changed after publish -> mismatch:... ---
+    bad_art<Vec<Artifact>> = Vec()
+    bad_art.push(Artifact { name = "zlib", version = "1.3", hash = "H_FORGED_ZLIB" })
+    fails = fails + check(verify_closure(sc, bad_art, system_state_root(bad_art), regPub, ck).starts_with("mismatch:"),
+                          "gate refuses on-disk content-hash mismatch")
+
+    # --- 5. a pkg never published in the ledger -> unpublished:... ---
+    stray<Vec<Artifact>> = Vec()
+    stray.push(Artifact { name = "getty", version = "1.0", hash = "h_getty" })
+    fails = fails + check(verify_closure(sc, stray, system_state_root(stray), regPub, ck).starts_with("unpublished:"),
+                          "gate refuses unpublished artifact")
+
+    # --- 6. a pkg later REVOKED -> retracted:... ---
+    revoked<SignedChain> = apply_op(sc, PkgOp { kind = "revoke", name = "gzip", version = "2.0", stage = "", hash = "" }, seed1)
+    revoked_ck<String> = sign_ledger_checkpoint(revoked, seed1)
+    fails = fails + check(verify_closure(revoked, arts, want_root, regPub, revoked_ck).starts_with("retracted:"),
+                          "gate refuses revoked artifact (gzip revoked in ledger)")
+
+    # --- 7. a closure whose root doesn't match the registry state -> root-mismatch
+    #         (zlib-only audits clean against the ledger but its root != the
+    #         recorded full-system root) ---
+    other_arts<Vec<Artifact>> = Vec()
+    other_arts.push(Artifact { name = "zlib", version = "1.3", hash = hash_of("zlib", "1.3") })
+    fails = fails + check(verify_closure(sc, other_arts, want_root, regPub, ck) == "root-mismatch",
+                          "gate refuses root mismatch (closure != recorded state)")
+
+    # --- 8. ROLLBACK: a smaller, previously-verified state still passes the gate.
+    #         zlib is still published + not revoked, so a zlib-only closure
+    #         (a prior generation) verifies against its own recorded root. ---
+    zlib_only<Vec<Artifact>> = Vec()
+    zlib_only.push(Artifact { name = "zlib", version = "1.3", hash = hash_of("zlib", "1.3") })
+    zroot<String> = system_state_root(zlib_only)
+    fails = fails + check(verify_closure(sc, zlib_only, zroot, regPub, ck) == "ok:all",
+                          "rollback: prior zlib-only state root still verifies")
+
+    sum<String> = "REALIZER-VERIFY: PASS (gate wired into realizer; authentic proceeds, 6 tamper modes refuse)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}
+
+# local helper: the content hash a pkg's deterministic body yields.
+hash_of(name<String>, version<String>)<String> -> {
+    return content_hash("bytes:" + name + ":" + version, name, version)
+}

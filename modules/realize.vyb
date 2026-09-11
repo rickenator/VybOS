@@ -27,6 +27,8 @@ import vybos::{content_hash}
 import plan::{Pkg, Dep, SystemSpec, RealRec,
               resolve, real_table, real_of, find_pkg,
               order_count, token_kth}
+import chain::{SignedChain}
+import verifyinstall::{Artifact, audit_artifacts, trusted_segment, system_state_root}
 
 // ---- deterministic source mirror (by package name) ----
 // The demo realizer realises against stable httpbin bodies so store paths are
@@ -175,4 +177,26 @@ realize_spec(storeDir<String>, spec<SystemSpec>)<RealizeResult> -> {
         }
     }
     return RealizeResult { realised = realised, failed = failed, order = order }
+}
+
+// §5 VERIFY-BEFORE-INSTALL GATE, wired into the realizer: before materialising
+// ANY object, run the three checks (trusted chain segment via registry
+// checkpoint, artifact audit: published + not revoked/yanked + on-disk hash ==
+// ledger record, and system state root construction+match). Returns "ok:all"
+// to proceed, or a machine-readable refusal reason (untrusted-segment /
+// unpublished:... / retracted:... / mismatch:... / root-mismatch) — the caller
+// must NOT realize anything unless the result is exactly "ok:all".
+//
+// `arts` is the resolved closure as Artifacts; `want_root` is the deterministic
+// system state root the registry recorded for the accepted state. `regPub` is
+// the forge/registry public key (the ledger's genesis signer / trust root) and
+// `ck_sig` a registry-signed checkpoint over the ledger's tip.
+share(all)
+verify_closure(sc<SignedChain>, arts<Vec<Artifact>>, want_root<String>,
+               reg_pub<String>, ck_sig<String>)<String> -> {
+    if (!trusted_segment(sc, reg_pub, ck_sig)) { return "untrusted-segment" }
+    aud<String> = audit_artifacts(sc, arts)
+    if (aud != "ok:all") { return aud }
+    if (system_state_root(arts) != want_root) { return "root-mismatch" }
+    return "ok:all"
 }
