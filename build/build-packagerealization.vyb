@@ -1,0 +1,104 @@
+// build-packagerealization.vyb — VybOS PACKAGE REALIZATION RECORD proving entry
+// (issue #7). Seals the ACCEPTED, state-tagged patch set (driven through the
+// patchlife lifecycle) into an AUTHENTIC signed realization record — the
+// provenance that makes a rebuild apply the exact stored, vetted patches
+// instead of re-running inference. Bridges modules/patchlife (lifecycle) and
+// modules/packagerealization (sealed realization):
+//
+//   1. a generated patch is authored (experimental), gathers evidence (candidate),
+//      is REVIEWED (accepted) -> legally sealable;
+//   2. seal_realization() -> a SignedChain recording the patched realization,
+//      sealed under the forge key + publisher origin;
+//   3. the deterministic realization identity (sha256 of the sorted accepted
+//      patch set) authenticates in is_legit_realization;
+//   4. an UNREVIEWED or HIGH-RISK-unapproved patch is NOT legally sealable (the
+//      lifecycle guardrail blocks sealing it into an accepted realization);
+//   5. wrong forge root / tampered record / wrong identity all reject.
+//
+// Key material: RFC 8032 TEST seeds, scaffold-only.
+//
+// Run:  VYB_STDLIB=$VYB_STDLIB build/vyb build/build-packagerealization.vyb --module-path modules
+
+import patchlife::{ManagedPatch, promote}
+import packagerealization::{RealPatch, to_real_patch, is_legally_sealable,
+             realization_identity, seal_realization, is_legit_realization}
+import chain::{serialize, deserialize, tip_hash, Chain, SignedChain}
+import crypto::{ed25519_publickey}
+
+check(c<Bool>, l<String>)<Int> -> {
+    if (!c) { println("  FAIL " + l); return 1 }
+    println("  ok   " + l)
+    return 0
+}
+
+main()<Int> -> {
+    fails<Int> = 0
+    seed1<String> = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    seed2<String> = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+    forgePub<String> = ed25519_publickey(seed1)
+    otherPub<String> = ed25519_publickey(seed2)
+    origin<String> = "vybforge/pkg-realizations"
+
+    # ---- author + promote a generated repair patch through review ---------
+    authored<ManagedPatch> = ManagedPatch { id = "p1", cls = "generated", state = "experimental",
+        highRisk = false, reason = "fix gcc-14 asm constraint", generator = "qwen-moe-1" }
+    cand<ManagedPatch> = promote(authored, "validated-candidate")   # build + tests passed
+    reviewed<ManagedPatch> = promote(cand, "reviewed")              # human review -> ACCEPTED
+
+    # a curated VybOS patch (already reviewed) for the same package
+    curated<ManagedPatch> = ManagedPatch { id = "p2", cls = "curated", state = "reviewed",
+        highRisk = false, reason = "", generator = "" }
+
+    # ---- build the accepted realization record ----------------------------
+    rp1<RealPatch> = to_real_patch(reviewed, "h_asm_fix")
+    rp2<RealPatch> = to_real_patch(curated, "h_curated")
+    fails = fails + check(is_legally_sealable(rp1), "reviewed generated patch legally sealable")
+    fails = fails + check(is_legally_sealable(rp2), "reviewed curated patch legally sealable")
+
+    pset<Vec<RealPatch>> = Vec(); pset.push(rp1); pset.push(rp2)
+    rident<String> = realization_identity(pset)
+    rc<SignedChain> = seal_realization("system", "0.1", "http://mirror", rident, pset, origin, seed1)
+
+    # 1. authentic + identity recorded
+    fails = fails + check(is_legit_realization(rc, rident, forgePub), "realization record authentic (forge key)")
+    fails = fails + check(is_legit_realization(rc, "bad-ident", forgePub) == false, "wrong realization identity rejected")
+
+    # 2. wrong forge root anchors nothing
+    fails = fails + check(!is_legit_realization(rc, rident, otherPub), "wrong forge pubkey rejected")
+
+    # 3. SIGNATURE GATE: tamper a recorded patch state, keep ORIGINAL sigs
+    txt<String> = serialize(rc.chain)
+    evil<String> = txt.replace("reviewed", "experimental")
+    tchain<Chain> = deserialize(evil)
+    forged<SignedChain> = SignedChain { chain = tchain, signers = rc.signers, sigs = rc.sigs, rotations = rc.rotations }
+    fails = fails + check(!is_legit_realization(forged, rident, forgePub), "tampered realization rejected (signature gate)")
+
+    # 4. an UNREVIEWED generated patch cannot be sealed into an accepted record
+    unrev<RealPatch> = to_real_patch(cand, "h_unrev")   # still validated-candidate (not reviewed)
+    fails = fails + check(!is_legally_sealable(unrev), "unreviewed generated patch NOT legally sealable")
+
+    # 5. a HIGH-RISK patch may be a candidate but the guardrail blocks reviewed ->
+    #    never sealable as accepted (defense against auto-accept of crypto/auth/etc)
+    hi_managed<ManagedPatch> = ManagedPatch { id = "p3", cls = "generated", state = "validated-candidate",
+        highRisk = true, reason = "openssl ECDSA ctx", generator = "qwen-moe-1" }
+    hi_cand<ManagedPatch> = promote(hi_managed, "reviewed")   # guardrail blocks -> stays candidate
+    hi_patch<RealPatch> = to_real_patch(hi_cand, "h_hi")
+    fails = fails + check(hi_cand.state == "validated-candidate", "high-risk patch cannot be auto-reviewed (guardrail)")
+    fails = fails + check(!is_legally_sealable(hi_patch), "high-risk unapproved patch NOT legally sealable")
+
+    # 6. a legal single-patch (curated) realization round-trips + verifies
+    solo<Vec<RealPatch>> = Vec(); solo.push(rp2)
+    sident<String> = realization_identity(solo)
+    solo_rc<SignedChain> = seal_realization("system", "0.1", "http://mirror", sident, solo, origin, seed1)
+    fails = fails + check(is_legit_realization(solo_rc, sident, forgePub), "curated-only realization authentic")
+
+    # 7. deterministic identity: same accepted set, any order -> same root
+    pset_rev<Vec<RealPatch>> = Vec(); pset_rev.push(rp2); pset_rev.push(rp1)
+    fails = fails + check(realization_identity(pset_rev) == rident, "realization identity order-independent (sorted)")
+
+    sum<String> = "PACKAGE-REALIZATION: PASS (accepted patch set sealed with lifecycle state; unreviewed/high-risk refused)"
+    if (fails > 0) { sum = fails.to_string() + " FAILURE(S)" }
+    println("\n" + sum)
+    if (fails == 0) { return 0 }
+    return 1
+}

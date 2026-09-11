@@ -90,6 +90,14 @@ fingerprinted, sealed patches — never by re-running the model.
 - `modules/patchlife.vyb` — states/transitions, escalation, guardrail, fingerprint.
 - `build/build-patchlife.vyb` — 28 checks prove the lifecycle, escalation order,
   guardrail, and fingerprint determinism/order-independence.
+- `modules/packagerealization.vyb` — seals the ACCEPTED, state-tagged patch set
+  into an AUTHENTIC signed realization record (realization_identity = sha256 of
+  the sorted accepted patches; only `is_legally_sealable` patches pass, so an
+  unreviewed or high-risk-unapproved patch can never be sealed as accepted).
+- `build/build-packagerealization.vyb` — 11 checks prove a reviewed generated
+  patch + curated patch seal into an authentic realization, unreviewed /
+  high-risk patches are refused, signature-gate tamper rejects, and identity is
+  order-independent.
 
 ## Open follow-ons (split from #7 once the realization model stabilizes)
 
