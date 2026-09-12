@@ -206,6 +206,13 @@ $VYB build/build-derive-gcc.vyb    $COMMON       # T2 gcc 13.2.0 (C-only)
 $VYB build/build-derive-kernel.vyb $COMMON       # T3 linux-6.6 bzImage (flagship)
 $VYB build/build-reprobuild-binutils.vyb $COMMON # binutils independent-build proof
 $VYB build/build-reprobuild-gcc.vyb    $COMMON   # gcc tower independent-build proof
+
+# VYBLLM — signed model selection + verification (VybOS issue #9):
+$VYB build/build-modelselect.vyb $COMMON          # selection+verification core (A+B: fixtures)
+$VYB build/build-modelselect-real.vyb $COMMON     # C: REAL Qwen3-4B signed registry entry +
+                                                  #    user any-model load through select/boot,
+                                                  #    loaded on the real tokenizer (VYB_LLM_DIR)
+
 ```
 
 (The `# …` comments are the slogans used as commit/step labels; the real proof

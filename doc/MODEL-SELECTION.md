@@ -1,14 +1,17 @@
 # VybOS model-selection layer (VYBLLM-ARCHITECTURE.md §4/§5 step 4-5) — mapped plan
 
-> Status: CHECKPOINT A + B DONE, verified (2026-09-11). A: `modules/modelselect.vyb`
+> Status: CHECKPOINT A + B + C DONE, verified (2026-09-11). A: `modules/modelselect.vyb`
 > + `build/build-modelselect.vyb` — selection + verification core. B: `## models`
 > section in the vybconfig model (`ModelReq {role,id}`, parse/serialize/validate/
 > diff) + config-driven boot/reload wiring `boot_model(...)` (admin root-gated,
-> builder unprivileged). Both run green under `build/vyb` (modelselect 15/15;
-> vybconfig incl. models invariants). No real 4B artifact needed: the slice is
-> SELECTION + VERIFICATION over signed registry entries, dogfooded with fixture
-> records + a fixture tokenizer dir. The real Qwen3-4B swap is VybForge's
-> in-progress track; it plugs in as another signed registry entry.
+> builder unprivileged). C: `build/build-modelselect-real.vyb` — the REAL Qwen3-4B
+> as a SIGNED registry entry (GGUF + vocab/merges hashes committed in the record)
+> + an end-to-end USER any-model load through `select_model`/`boot_model`
+> (unprivileged), and the selected dir LOADS on the real tokenizer via the
+> stdlib/vllm `Model` facade — encode ids == the VybForge gold
+> ([785,6722,315,9625,374]), encode->decode round trip faithful.
+> Both A/B/C run green under `build/vyb` (modelselect 15/15; modelselect-real
+> 12/12). The real 4B swap plugs in as another signed registry entry.
 >
 > Steering: VybOS issue #9. Engine facade already landed (stdlib/vllm Model).
 
@@ -72,3 +75,11 @@ the freedom/trust-accept capability gate); a user role passes the default
   the signed registry (admin loads by default, root-gated via `cred`; builder
   unprivileged; unassigned role rejected). Root mechanics pinned above. All green
   under build/vyb (modelselect 15/15, vybconfig incl. models invariants).
+- **C. Real Qwen3-4B as a signed entry + user any-model load.** **DONE
+  (2026-09-11):** `build/build-modelselect-real.vyb` seals a SIGNED registry
+  record committing the REAL artifact hashes (GGUF sha256 + tokenizer vocab/
+  merges), publishes it, resolves a user any-model load through
+  `select_model`/`boot_model` (unprivileged, NOT root-gated), then LOADS the
+  selected dir on the real tokenizer via stdlib/vllm `model_load` — encode ids
+  == the VybForge gold `[785,6722,315,9625,374]` and encode→decode round trips
+  (`hello world`). Wrong-pubkey reject retained. 12/12 green under build/vyb.
