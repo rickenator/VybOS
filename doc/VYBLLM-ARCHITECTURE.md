@@ -117,7 +117,7 @@ on-demand reload.
    (`cuda_binding.vyb` = raw libcuda FFI decls, manifest `[mod]
    boundary=["freedom"]` per #204 P3), consumed cross-repo by both consumers.
    So there is NO separate `vygpu.vyb` to extract, and the GPU kernels (NVPTX
-   device modules, PTX/RTX-only) + GGUF drivers stay as Vyb bindings / VybForge
+   device modules, PTX/GPU-only) + GGUF drivers stay as Vyb bindings / VybForge
    native respectively. **`stdlib/vllm` is therefore a PORTABLE CPU engine**
    (tokenizer + sampler) — the GPU surface is a binding the OS/Forge consume,
    not stdlib-folded. **[DECIDED — see §7]**
@@ -143,7 +143,7 @@ kernels under `llm::`" — was revised after inspecting the actual code:
   paths, I/O in main), not reusable libraries; there is no committed `.gguf`
   fixture to verify a relocated loader against.
 - **The GPU kernels are NVPTX device modules** (compile `--kernel` → PTX, run on
-  RTX 3090) — not portable-stdlib material and only hardware-verifiable.
+  GPU) — not portable-stdlib material and only hardware-verifiable (as tested on an RTX 3090).
 
 **Consequence: `stdlib/vllm` is closed as a PORTABLE CPU ENGINE** holding the
 tokenizer + sampler. The GPU surface (cuda_binding, kernels, tensor wrapper,
