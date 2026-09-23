@@ -20,11 +20,12 @@ struct Pkg { name<String>, version<String>, source<String>, deps<Vec<Dep>>, stor
 // module contribution beyond a bare on/off (doc/COMPOSITION.md).
 //
 // FIELD ORDER: `enabled<Bool>` is FIRST on purpose. Vyb toolchain bug
-// rickenator/Vyb#215 makes to_string() mis-read any Int field that follows a
-// Bool field at index >= 1 (the serializer's offset walk treats the Bool as
-// zero-size, shifting later field reads; direct field access is unaffected).
-// Bool-first serializes cleanly (verified by build/probe-bool-first.vyb);
-// keep it there until the compiler fix lands.
+// rickenator/Vyb#215 (to_string() mis-reads any Int after a non-leading Bool)
+// was FIXED in Vyb main at 6d89575 (2026-09-04), but VybOS builds against the
+// vyb-os-stable worktree, which only picks it up after
+// `./build/sync-os-toolchain.sh` fast-forwards to origin/main AND rebuilds.
+// Until the toolchain is at/after 6d89575, keep `enabled` first — reorder
+// back to natural order after the sync.
 share(all)
 struct Service { enabled<Bool>, name<String>, command<String>, port<Int>, args<Vec<String>> }
 share(all)
