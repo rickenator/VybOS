@@ -1,6 +1,15 @@
 # VybOS — Session Status Report & Next Steps
 
-> last_updated: 2026-09-04 (VybChain #8 recon + design: cleanroom core `stdlib/chain` verified on the Vyb toolchain — determinism, checkpoint round-trip, tamper detection; security bar = signature layer on `crypto`; two toolchain codegen bugs blocking the in-memory tamper tests (workaround proven: bottom-up / persistence-based construction); design + status in doc/VYBCHAIN.md, repro pin repro/probe_chain_heapcorr.vyb)
+> last_updated: 2026-10-26 (toolchain synced to Vyb main `3bc86651`; framework
+> ported to the stricter semantic pass — `0c177bf`; VybChain Phase 1+2 LANDED
+> in VybOS (signed store index, domain ledger, verify-before-install, secure
+> install, boot-legitimization, adaptive patching); vLLM model-selection
+> Checkpoints A-C landed (#9); the 2026-09-04 codegen blockers (#217/#218) and
+> the crypto RFE (#219 Ed25519) are all RESOLVED in the toolchain. Remaining
+> for 0.1: disk image (B5), bootloader, atomic gen-switch, own userspace.)
+>
+> History: 2026-09-04 entry (VybChain #8 recon/design) retained below where
+> still accurate; superseded claims are corrected in place.
 > Purpose: a self-contained handoff so a fresh session can resume with no
 > rediscovery. Toolchain, current state, what's done, open items, gotchas.
 
@@ -41,6 +50,37 @@ $VYB build/build-exec-real.vyb --module-path modules   # FULL pipeline over real
 $ROOT/tools/vybos-run --test      # container-rootfs boot to READY (bwrap/docker; builds rootfs if absent)
 $ROOT/tools/vybos-run --runtime qemu --test  # REAL QEMU kernel+initramfs boot to READY (fetches kernel)
 ```
+
+## 2b. Landed since the 2026-09-04 entry (all committed, pushed)
+
+- **VybChain (issue #8) Phase 1 + 2 LANDED in VybOS**: signed content-addressed
+  store index (`e44137d`), domain-operation ledger (publish/promote/revoke/
+  yank/replace_key/checkpoint, `42ad7cb`), verify-before-install resolver gate
+  (`a42d1a5`), full Phase-2 package record (identity, derivation, patch
+  provenance, publisher signature, `bfbcdf7`), verify-before-install wired INTO
+  the realizer (`e735b4b`), and the end-to-end secure install command
+  (plan→verify→materialize→record, `032231c`). Signed boot legitimization
+  (`053c62b`). See doc/VYBCHAIN.md — its §6 codegen blockers (#217, #218) are
+  RESOLVED on toolchain `3bc86651` (`repro/probe_chain_heapcorr.vyb` now
+  verifies clean, rc 0) and the Ed25519 crypto RFE (#219) SHIPPED:
+  `crypto::{ed25519_publickey,ed25519_sign,ed25519_verify}` confirmed present
+  in the synced toolchain stdlib.
+- **Adaptive patching (#7) core landed**: patch-class lifecycle, repair
+  escalation, guardrails (`6c9eeb6`), accepted-patch seal into an authentic
+  realization record (`db86d52`), and the repair loop core
+  (apply→validate→guardrail→promote→seal, `a337954`).
+- **vLLM model-selection layer (#9) Checkpoints A–C landed**: signed-registry
+  selection + root-gated admin (`1829efb`), models.admin/boot wiring + root
+  mechanics (`2e75652`), real Qwen3-4B as a signed registry entry + user
+  any-model load (`b43c01a`). GPU seam decided: bindings/cuda IS the seam;
+  stdlib/vllm is the portable CPU engine.
+- **Framework ported to toolchain `3bc86651`** (`0c177bf`): the stricter
+  semantic pass (declared-type mismatches now errors; nested in-place mutation
+  `get(i).field =` now rejected as a by-value temporary) broke
+  `build-store.vyb` (`h<Int> = content_hash(...)` — content_hash returns the
+  hex String) and `build-compose.vyb` (`services.get(1).enabled = false` —
+  was a silent no-op). Both fixed; FULL offline slice battery re-verified
+  green (compose, apply, store, exec, url-realize, proto-plan, closure).
 
 ## 2. Current state (all committed, pushed; slices PASS on the isolated toolchain)
 
@@ -268,11 +308,26 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
 
 ## 4. Next steps (framework-side, no impl-agent dependency)
 
-- [ ] **VybChain (issue #8)** — Phase 1/2 work, status in `doc/VYBCHAIN.md`:
-      the cleanroom core (`stdlib/chain`) is in flight in the Vyb repo; the
-      VybOS side waits for (a) the two toolchain codegen fixes (§3 Vyb
-      issues), (b) the `crypto` signature primitives (impl-agent RFE), then
-      the package-record domain + resolver/installer integration land here.
+The remaining path to a complete 0.1 "Brutal Dogfood" (everything earlier is
+done; see §2b and doc/RELEASE-BRUTAL-DOGFOOD.md items 1–2):
+
+- [ ] **Atomic gen-switch (generations wiring)** — tie `spec_digest` +
+      `plan_lines` into `build/generations.vyb` so a module-composed switch is
+      recorded as a generation with rollback. Needs atomic profile flip:
+      check whether `rename`/`symlink` landed in the toolchain stdlib `fs`
+      (`3bc86651`); if yes, wire it; if no, file the RFE against rickenator/Vyb.
+- [ ] **Root/disk image (B5)** — turn `build/rootfs-out/` into a bootable
+      disk image (partition + filesystem, content-addressed), booting to
+      READY under the derived QEMU + derived kernel. See doc/PLAN_BOOTABLE_IMAGE.md.
+- [ ] **Bootloader** — as a derivation (or a direct kernel/boot-param path
+      from the store).
+- [ ] **VybOS's own userspace** — replace the stand-in BusyBox init with the
+      config-generated `/init` + `services.sh` activator running purely from
+      store artifacts.
+- [ ] **VybChain Phase 3** — resolver/installer integration into the applied
+      system (Phase 2 ledger primitives are landed; see doc/VYBCHAIN.md §5).
+- [ ] **VYBCHAIN.md §7 table refresh** — phases 1–2 are landed (this file,
+      §2b); the table still reads in-flight/blocked. Update alongside Phase 3 work.
 - [x] **Real-HTTP(S) source-TREE realization**: `build/build-real-tree.vyb`
       realises a FULL source *tree* from a REAL GitHub tarball over genuine TLS
       (`https_get_full_verified` + system CA) — `url_split` → verified-TLS fetch
@@ -335,6 +390,17 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
       framework-side; see `doc/RFE-M2.md` for what the impl agent still owes.
 
 ## 5. Gotchas to remember (see also doc/VYB-LANGUAGE-NOTES.md)
+
+- **Toolchain `3bc86651` semantic pass (NEW)**: declared-type mismatches are
+  now ERRORS (e.g. `h<Int> = content_hash(...)` — it returns String), and
+  nested in-place mutation (`x.get(i).field = v`) is rejected as a by-value
+  temporary (it was a SILENT NO-OP before — always copy out, mutate a local,
+  `set(i, v)` back). After every `sync-os-toolchain.sh` advance, re-run the
+  offline slice battery before building anything new.
+- **`Vec<Vec<T>>` is FIXED on this toolchain** (#284/#373/#382): deep-copy on
+  push/get/set, nested teardown, `get` hands back an owned value. The 2026-09
+  notes calling it unusable are historical; only the no-in-place-mutation
+  rule above remains.
 
 - **Vyb ranges are INCLUSIVE**: iterate `0..len-1`, guard empties or you read
   one-past (double-free). #1 gotcha.
