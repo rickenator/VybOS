@@ -1,5 +1,6 @@
-// probe_realize_pkg_lookup.vyb — pinned minimal repro for the toolchain
-// splice/lookup quirk found while writing build/build-securegen.vyb (2026-10-26).
+// repro/probe_realize_pkg_lookup.vyb — pinned minimal repro for toolchain
+// issue rickenator/Vyb#494 (filed 2026-10-26) — splice/lookup quirk found
+// while writing build/build-securegen.vyb on toolchain 3bc86651.
 //
 // Symptom: with BOTH `import plan::{..., Pkg, ...}` AND
 // `import realize::{verify_closure}`, any LOCAL Pkg-typed function or a Pkg

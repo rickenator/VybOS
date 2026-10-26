@@ -358,8 +358,9 @@ done; see §2b and doc/RELEASE-BRUTAL-DOGFOOD.md items 1–2):
       bootable system is built ONLY from ledger-verified artifacts.
       Gotcha pinned: `repro/probe_realize_pkg_lookup.vyb` — importing
       `realize::{verify_closure}` (or `vybos::{content_hash}`) makes `Pkg`
-      unresolvable in a file that otherwise compiles; build-securegen works
-      around it via `verifyinstall::verify_before_install` + inline sha256.
+      unresolvable in a file that otherwise compiles (filed upstream as
+      rickenator/Vyb**#494**); build-securegen works around it via
+      `verifyinstall::verify_before_install` + inline sha256.
 - [ ] **VYBCHAIN.md §7 table refresh** — phases 1–2 are landed (this file,
       §2b); the table still reads in-flight/blocked. Update alongside Phase 3 work.
 - [x] **Real-HTTP(S) source-TREE realization**: `build/build-real-tree.vyb`
