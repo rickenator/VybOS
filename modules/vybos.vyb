@@ -140,9 +140,10 @@ fetch_derivation(name<String>, version<String>, host<String>, port<Int>,
         return Package?()
     }
     bytes<String> = r.body
-    h<Int> = content_hash(bytes, name, version)
-    sp<String> = "/vyb/store/" + h.to_string() + "-" + name + "-" + version
-    if (!materialize(bytes, storeDir + "/" + h.to_string() + "-" + name + "-" + version + ".src")) {
+    // content_hash returns the 256-bit hex digest as a String (stdlib sha256).
+    h<String> = content_hash(bytes, name, version)
+    sp<String> = "/vyb/store/" + h + "-" + name + "-" + version
+    if (!materialize(bytes, storeDir + "/" + h + "-" + name + "-" + version + ".src")) {
         return Package?()
     }
     return Package?(Package {

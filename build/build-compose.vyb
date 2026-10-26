@@ -99,7 +99,12 @@ main()<Int> -> {
     dsoff<SystemSpec> = blank_system("x86_64-linux", "h5")
     dsoff.services.push(mk_service("sshd", "/a"))
     dsoff.services.push(mk_service("x", "/b"))
-    dsoff.services.get(1).enabled = false
+    // Build bottom-up: nested in-place mutation through get(i) is a by-value
+    // temporary (rejected by the toolchain since the #284 family). Copy out,
+    // mutate the local, write back with set().
+    dsvc<Service> = dsoff.services.get(1)
+    dsvc.enabled = false
+    dsoff.services.set(1, dsvc)
     fails = fails + check(compose_issue(dsoff) == "",
                           "disabled service is not a duplicate conflict")
 
