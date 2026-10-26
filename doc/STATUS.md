@@ -311,19 +311,36 @@ nested store) → `439d216` (T3: derive the Linux kernel bzImage, flagship).
 The remaining path to a complete 0.1 "Brutal Dogfood" (everything earlier is
 done; see §2b and doc/RELEASE-BRUTAL-DOGFOOD.md items 1–2):
 
-- [ ] **Atomic gen-switch (generations wiring)** — tie `spec_digest` +
-      `plan_lines` into `build/generations.vyb` so a module-composed switch is
-      recorded as a generation with rollback. Needs atomic profile flip:
-      check whether `rename`/`symlink` landed in the toolchain stdlib `fs`
-      (`3bc86651`); if yes, wire it; if no, file the RFE against rickenator/Vyb.
-- [ ] **Root/disk image (B5)** — turn `build/rootfs-out/` into a bootable
-      disk image (partition + filesystem, content-addressed), booting to
-      READY under the derived QEMU + derived kernel. See doc/PLAN_BOOTABLE_IMAGE.md.
-- [ ] **Bootloader** — as a derivation (or a direct kernel/boot-param path
-      from the store).
-- [ ] **VybOS's own userspace** — replace the stand-in BusyBox init with the
-      config-generated `/init` + `services.sh` activator running purely from
-      store artifacts.
+- [x] **Atomic gen-switch (generations wiring)** — **DONE + BOOT-PROVEN
+      2026-10-26**: `build/build-gensys.vyb` builds two immutable generations
+      (`/vyb/system/generations/gen-<digest>/`) + a `current` pointer symlink,
+      `build/build-ctl.vyb` covers control-plane generation+rollback. Boot
+      proof under the derived kernel: gen-1 image reports
+      `ACTIVE_GENERATION=gen-2703110824326641731` (generation-a), gen-2 image
+      reports `gen-5537419194290973092` (generation-b) — the pointer selects
+      the live generation; both reach `VYBOS_READY=1`. All 14 build slices
+      re-verified green on toolchain `3bc86651`.
+- [x] **Root/disk image (B5) boot** — **DONE + BOOT-PROVEN 2026-10-26**:
+      `tools/vybos-run --runtime qemu --disk build/gensys-out/gen1.img --test`
+      boots the persistent raw ext4 root as `/dev/vda` (`root=/dev/vda rw
+      init=/init`), EXT4 mounted r/w, generation-aware init, `VYBOS_READY=1`
+      under the DERIVED kernel (`6.6.0 ... gcc (GCC) 13.2.0, GNU ld 2.43`,
+      path-independent deterministic build). Boot path is direct-kernel
+      (`-kernel`) via the derived QEMU's SeaBIOS — no separate bootloader
+      stage; shipping a bootloader derivation is OPTIONAL (decision below).
+      The kernel "Attempted to kill init" panic after READY is cosmetic
+      (init exits 0 once READY is announced).
+- [ ] **VybOS's own userspace (the remaining 0.1 gap)** — the image still
+      seeds `/bin/busybox` from the HOST (`/usr/bin/busybox`). Next step:
+      re-derive busybox 1.36.1 as a store build-stage derivation COMPILED BY
+      THE DERIVED gcc (the store currently has no busybox entry — the old
+      flat-store one was cleared), then point `build/build-gensys.vyb`'s
+      seed step at the store ELF instead of the host copy, and re-prove the
+      B5 boot with `ACTIVE_GENERATION` intact.
+- [ ] **Bootloader (optional/decision)** — direct-kernel boot works end to
+      end; a GRUB/syslinux derivation is only needed for bare-metal or
+      `-drive`-only boots. Decide: declare direct-kernel the 0.1 boot path
+      (recommended) or file the bootloader-derivation item.
 - [ ] **VybChain Phase 3** — resolver/installer integration into the applied
       system (Phase 2 ledger primitives are landed; see doc/VYBCHAIN.md §5).
 - [ ] **VYBCHAIN.md §7 table refresh** — phases 1–2 are landed (this file,
