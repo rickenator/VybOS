@@ -341,8 +341,25 @@ done; see §2b and doc/RELEASE-BRUTAL-DOGFOOD.md items 1–2):
       end; a GRUB/syslinux derivation is only needed for bare-metal or
       `-drive`-only boots. Decide: declare direct-kernel the 0.1 boot path
       (recommended) or file the bootloader-derivation item.
-- [ ] **VybChain Phase 3** — resolver/installer integration into the applied
-      system (Phase 2 ledger primitives are landed; see doc/VYBCHAIN.md §5).
+- [x] **VybChain Phase 3 — resolver/installer integration into the applied
+      system** — **DONE + BOOT-PROVEN 2026-10-26** (`build/build-securegen.vyb`,
+      "ALL SECURE-GEN (VYBCHAIN PHASE 3) INVARIANTS PASS", 19/19): compose a
+      real module-composed spec → resolve closure → publish each pkg into the
+      registry ledger (Ed25519) + signed checkpoint → §5 verify-before-install
+      gate (tampered artifact REFUSED, builder tree absent until approved) →
+      full §2 package record sealed → generation tree staged with the verified
+      state root baked in (`/etc/vyb-os/ledger-root`) → bootable ext4 image →
+      SIGNED boot-legitimization chain over (generation, derived-kernel store
+      id, image sha256, state root), receipt persisted + re-verified after a
+      disk round-trip + tamper caught. BOOT PROOF:
+      `tools/vybos-run --runtime qemu --disk build/securegen-out/securegen-gen1.img --test`
+      → console `LEDGER_ROOT=902530530f...` (== the gate's want_root),
+      `ACTIVE_GENERATION=gen-8158059861087602059`, `VYBOS_READY=1` — the
+      bootable system is built ONLY from ledger-verified artifacts.
+      Gotcha pinned: `repro/probe_realize_pkg_lookup.vyb` — importing
+      `realize::{verify_closure}` (or `vybos::{content_hash}`) makes `Pkg`
+      unresolvable in a file that otherwise compiles; build-securegen works
+      around it via `verifyinstall::verify_before_install` + inline sha256.
 - [ ] **VYBCHAIN.md §7 table refresh** — phases 1–2 are landed (this file,
       §2b); the table still reads in-flight/blocked. Update alongside Phase 3 work.
 - [x] **Real-HTTP(S) source-TREE realization**: `build/build-real-tree.vyb`

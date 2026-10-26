@@ -1,0 +1,34 @@
+// probe_realize_pkg_lookup.vyb — pinned minimal repro for the toolchain
+// splice/lookup quirk found while writing build/build-securegen.vyb (2026-10-26).
+//
+// Symptom: with BOTH `import plan::{..., Pkg, ...}` AND
+// `import realize::{verify_closure}`, any LOCAL Pkg-typed function or a Pkg
+// struct literal in main fails semantic analysis with
+//   "Unknown type identifier: Pkg"
+// even though the identical file WITHOUT the realize import compiles and runs.
+// The spliced verify_closure body does NOT reference Pkg (checked), so the
+// lookup failure is caused by the splice itself, not by a missing import.
+//
+// The same failure is triggered by `import vybos::{content_hash}` in a file
+// that otherwise passes (bisected 2026-10-26); realize is the minimal 2-import
+// pin.
+//
+// Expected (once fixed): prints "2" (mk() literal + direct literal both parse
+// and the program runs). Current toolchain 3bc86651: semantic error.
+//
+// Run: $VYB repro/probe_realize_pkg_lookup.vyb --module-path modules
+
+import plan::{SystemSpec, Pkg, Dep, spec_digest, resolve, find_pkg, order_count, token_kth}
+import realize::{verify_closure}
+
+mk()<Pkg> -> {
+    return Pkg { name = "a", version = "1", source = "s", deps = Vec(), storePath = "" }
+}
+
+main()<Int> -> {
+    pk<Vec<Pkg>> = Vec()
+    pk.push(mk())
+    pk.push(Pkg { name = "b", version = "1", source = "s", deps = Vec(), storePath = "" })
+    print(pk.len().to_string())
+    0
+}
