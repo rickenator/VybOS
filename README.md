@@ -1,5 +1,5 @@
 ---
-last_edited: 2026-08-26
+last_edited: 2026-10-27
 ---
 
 <p align="center">
@@ -42,6 +42,21 @@ as-code and content-addressing ideas that are common in the mode, but it is not 
 clone and is not measured against any other distro's design or reproducibility bar.
 
 ## Status
+
+**Current state (2026-10-27).** The framework is ported to Vyb main `3bc86651`
+(the stricter semantic pass) and every build slice is re-verified green on it.
+**VybChain Phase 1+2 are landed and Phase 3 is boot-proven** — signed
+content-addressed store index, domain-operation ledger (publish/promote/revoke/
+yank/replace_key/checkpoint), verify-before-install, secure install,
+boot-legitimization and adaptive patching (19/19 secure-gen invariants). The
+**B5 persistent disk image and the atomic generation switch both boot to
+`VYBOS_READY=1` under the *derived* kernel**, the generation `current` pointer
+selecting the live generation. The 2026-09-04 codegen blockers (#217/#218) and
+the Ed25519 crypto RFE (#219) are resolved upstream, and vLLM model selection
+(#9) is through Checkpoint C. **What is left for 0.1: VybOS's own userspace** —
+the image still seeds `/bin/busybox` from the host; re-deriving busybox with the
+derived gcc is the one remaining gap. A bootloader derivation is optional
+(direct-kernel boot works end to end). Live detail: `doc/STATUS.md`.
 
 **M0 + M1 done (2026-08-23).** Config-as-program plumbing proven: a machine
 declaration (`config/system.vyb`) imports the framework (`modules/vybos.vyb`)
@@ -243,7 +258,7 @@ markers are `REPROBUILD:BINUTILS:PASS` / `REPROBUILD:GCC:PASS`.)
 - [x] Derived hypervisor (QEMU-from-source) packaged into a nested store entry — full roll-your-own boot.
 - [x] Path-independent byte-deterministic kernel (built twice, byte-identical).
 - [x] Independent-build reproducibility proofs (binutils + gcc tower).
-- [~] Full bootable image: **persistent root/disk image (B5) + generation switch LANDED** — `build/build-image.vyb` → nested `store/<ca>/vybos-0.1-root.img`; `build/build-gensys.vyb` + `modules/gensys.vyb` put N immutable generations on the root with a `current` pointer (`/etc/vyb-os` follows it), init prints `ACTIVE_GENERATION` + READY; `tools/vybos-run --runtime qemu --disk … --test` boots as a real mounted root (derived kernel). Remaining: bootloader, VybOS's own userspace, and an atomic `vyb system switch` command (once the `rename`/`symlink` RFE lands).
+- [x] Full bootable image — **persistent root/disk image (B5) + atomic generation switch BOOT-PROVEN (2026-10-26)** under the derived kernel: `build/build-image.vyb` → nested `store/<ca>/vybos-0.1-root.img`; `build/build-gensys.vyb` + `modules/gensys.vyb` write N immutable generations with a `current` pointer (`/etc/vyb-os` follows it), init prints `ACTIVE_GENERATION` + `VYBOS_READY=1`; `tools/vybos-run --runtime qemu --disk … --test` boots each generation as a real mounted ext4 root. Remaining for 0.1: VybOS's own userspace (re-derive busybox with the derived gcc), plus a decision on whether 0.1 ships a bootloader derivation (direct-kernel boot is the recommended path).
 - [ ] Module-system deepening: service options (port, args) beyond `enabled`.
 - [~] Control plane (issue #2) — **generation mgmt (build-ctl.vyb)**, **`vybctl` CLI** (status/switch/rollback/plan, Vyb-native ancestor gate), **`vyb-config`** (`modules/vybconfig.vyb`: typed `VybConfig` schema + `/etc/vybos.md` parser + validate + canonical serialize + a→b diff — the ONE config model every frontend uses). Follow-ons: plumb vyb-config into `vyb-init`/`vyb-system`, curses + MCP frontends.
 
@@ -254,3 +269,16 @@ markers are `REPROBUILD:BINUTILS:PASS` / `REPROBUILD:GCC:PASS`.)
 - Follow Vyb terminology: **vybey** = the language, **vybish** = its style.
 - Store layout in `doc/STORE-LAYOUT.md` (repo-local `store/`, nested
   `store/<hexca>/…`; `/vyb/store` on-target).
+
+
+## The Vyb family
+
+Vyb is a language with more than one consumer; each project below is written in
+it and is a real, running thing rather than a demo.
+
+| project | what it is |
+|---|---|
+| **[Vyb](https://github.com/rickenator/Vyb)** | the language, the LLVM JIT/AOT compiler and the standard library — [vyb-lang.org](https://vyb-lang.org/) |
+| **VybWin** *(private for now)* | the window environment for VybOS: apps are cards summoned into an arena, with the ledger one flip away |
+| **[VybForge](https://github.com/rickenator/VybForge)** | the shop floor: a desired-state interviewer for VybOS, a Vyb-native on-GPU inference substrate, and the self-contained voice loop |
+| **[VybFly](https://github.com/rickenator/VybFly)** | FlyScale — a whole-brain connectome scaling study run on a Vyb-native simulator and Vyb GPU kernels |
